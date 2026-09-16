@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import sqlite3
 from contextlib import closing
@@ -55,6 +56,7 @@ class SQLiteMigrator:
                 for migration in migrations:
                     if migration.version in applied:
                         continue
+                    self._preserve_pre_migration_anomalies(connection, migration)
                     self._apply(connection, migration)
                     identifiers.append(migration.identifier)
                 connection.execute("COMMIT")
@@ -125,6 +127,44 @@ class SQLiteMigrator:
                 raise MigrationDriftError(f"Applied migration is missing: {identifier}")
             if migration.name != name or migration.checksum != checksum:
                 raise MigrationDriftError(f"Applied migration has changed: {identifier}")
+
+    @staticmethod
+    def _preserve_pre_migration_anomalies(
+        connection: sqlite3.Connection, migration: Migration
+    ) -> None:
+        if migration.version != 10:
+            return
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migration_quarantine ("
+            "migration_version INTEGER NOT NULL, resource_type TEXT NOT NULL, "
+            "resource_key TEXT NOT NULL, payload TEXT NOT NULL, captured_at TEXT NOT NULL, "
+            "PRIMARY KEY (migration_version, resource_type, resource_key))"
+        )
+        captured_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        rows = connection.execute(
+            "SELECT task_id,sequence,from_status,to_status,actor_agent_id,reason,occurred_at "
+            "FROM tas_task_transitions WHERE from_status='working' AND to_status='working'"
+        ).fetchall()
+        for row in rows:
+            payload = json.dumps(
+                {
+                    "task_id": row[0],
+                    "sequence": row[1],
+                    "from_status": row[2],
+                    "to_status": row[3],
+                    "actor_agent_id": row[4],
+                    "reason": row[5],
+                    "occurred_at": row[6],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migration_quarantine("
+                "migration_version,resource_type,resource_key,payload,captured_at) "
+                "VALUES (10,'task_transition',?,?,?)",
+                (f"{row[0]}:{row[1]}", payload, captured_at),
+            )
 
     @staticmethod
     def _apply(connection: sqlite3.Connection, migration: Migration) -> None:
