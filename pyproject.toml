@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "team-agent-system"
+version = "0.1.0"
+description = "Evidence-driven collaboration and trusted team memory middleware for independent coding agents."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "a2a-sdk[http-server]>=1.1,<2",
+  "fastapi>=0.116,<0.117",
+  "mcp>=1.30,<2",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.4,<9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["tas"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
