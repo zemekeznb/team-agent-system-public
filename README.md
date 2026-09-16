@@ -76,6 +76,7 @@ Working engineering prototypes now cover:
 - recovery across real MCP and Remote Agent process restarts;
 - idempotent task creation and replay;
 - receiver-owned, versioned Policy decisions with `allow`, `deny`, and `approval_required` outcomes;
+- a durable Approval lifecycle with receiver-owned decisions, expiry, concurrency protection, and atomic Task resumption;
 - structured Messages, Artifacts, task states, and transition history;
 - a lightweight TypeScript client.
 
@@ -85,7 +86,7 @@ These are technical-validation results, not a claim that the complete product is
 
 ### Now — Trusted control flow
 
-Approval lifecycle, Audit records, resource-level authorization, Policy and Approval integration, and stronger evidence boundaries.
+Resource-level authorization, Audit records, and stronger evidence boundaries around the completed Policy and Approval foundations.
 
 ### Next — Real multi-Owner validation
 
@@ -244,13 +245,15 @@ TAS 目前处于 **F2 / M3 技术验证阶段**。
 
 项目已经建立并验证了：解耦的 Domain/Application 核心、MCP 工具发现与调用、本地测试凭据身份绑定、官方 A2A SDK 互操作、最小 MCP→A2A 委派、持久化 Inbox、Claim/Lease/Retry/Acknowledge/Dead Letter、真实进程重启恢复、幂等创建与 Replay、接收方版本化 Policy、`allow`/`deny`/`approval_required` 决策、结构化 Message/Artifact/Task 历史，以及轻量 TypeScript Client。
 
+Approval 基础能力也已覆盖接收方 Owner 决议、批准/拒绝/过期、并发单赢家，以及审批结果与 Task 状态的原子转换。
+
 这些是已经形成工程证据的技术验证结果，但不代表完整产品已经可以投入使用。
 
 ## 接下来会发生什么？
 
 ### 现在：可信控制流程
 
-继续完善 Approval 生命周期、Audit 记录、资源级授权、Policy 与 Approval 的组合，以及更严格的 Evidence 边界。
+继续完善资源级授权、Audit 记录，以及建立在 Policy 与 Approval 基础上的更严格 Evidence 边界。
 
 ### 下一阶段：真实多 Owner 验证
 

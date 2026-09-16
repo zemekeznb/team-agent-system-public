@@ -55,7 +55,6 @@ class TaskStatus(StrEnum):
     WORKING = "working"
     INPUT_REQUIRED = "input_required"
     APPROVAL_REQUIRED = "approval_required"
-    APPROVED = "approved"
     REJECTED = "rejected"
     EXPIRED = "expired"
     FAILED = "failed"
@@ -67,8 +66,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.SUBMITTED: frozenset({TaskStatus.WORKING, TaskStatus.REJECTED, TaskStatus.EXPIRED, TaskStatus.CANCELLED}),
     TaskStatus.WORKING: frozenset({TaskStatus.INPUT_REQUIRED, TaskStatus.APPROVAL_REQUIRED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED}),
     TaskStatus.INPUT_REQUIRED: frozenset({TaskStatus.WORKING, TaskStatus.CANCELLED}),
-    TaskStatus.APPROVAL_REQUIRED: frozenset({TaskStatus.APPROVED, TaskStatus.REJECTED, TaskStatus.CANCELLED}),
-    TaskStatus.APPROVED: frozenset({TaskStatus.WORKING, TaskStatus.CANCELLED}),
+    TaskStatus.APPROVAL_REQUIRED: frozenset({TaskStatus.WORKING, TaskStatus.REJECTED, TaskStatus.EXPIRED, TaskStatus.CANCELLED}),
 }
 
 

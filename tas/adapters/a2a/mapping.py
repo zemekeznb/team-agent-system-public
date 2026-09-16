@@ -29,7 +29,6 @@ _TO_A2A_STATE = {
     TaskStatus.WORKING: "working",
     TaskStatus.INPUT_REQUIRED: "input-required",
     TaskStatus.APPROVAL_REQUIRED: "input-required",
-    TaskStatus.APPROVED: "working",
     TaskStatus.REJECTED: "rejected",
     TaskStatus.EXPIRED: "failed",
     TaskStatus.FAILED: "failed",

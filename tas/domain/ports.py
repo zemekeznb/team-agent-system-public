@@ -16,6 +16,7 @@ from .identity import (
 )
 from .collaboration import Artifact, ArtifactId, Task, TaskId, TaskMessage, TaskMessageId
 from .delivery import InboxItem, InboxItemId, LeaseToken
+from .approval import Approval, ApprovalId
 from .idempotency import (
     IdempotencyKey,
     IdempotencyRecord,
@@ -92,6 +93,13 @@ class IdempotencyRepository(Protocol):
         key: IdempotencyKey,
         fingerprint: RequestFingerprint,
     ) -> IdempotencyRecord: ...
+
+
+class ApprovalRepository(Protocol):
+    def add(self, approval: Approval) -> None: ...
+    def get(self, approval_id: ApprovalId) -> Approval | None: ...
+    def save_resolution(self, approval: Approval) -> None: ...
+    def resolve_with_task(self, approval: Approval) -> None: ...
     def complete(
         self, reservation: IdempotencyRecord, result: dict[str, object]
     ) -> IdempotencyRecord: ...
