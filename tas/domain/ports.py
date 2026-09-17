@@ -13,6 +13,7 @@ from .identity import (
     Team,
     TeamId,
     TeamMembership,
+    RepositoryBinding,
 )
 from .collaboration import Artifact, ArtifactId, Task, TaskId, TaskMessage, TaskMessageId
 from .delivery import InboxItem, InboxItemId, LeaseToken
@@ -60,6 +61,11 @@ class TaskRepository(Protocol):
     def get_message(self, message_id: TaskMessageId) -> TaskMessage | None: ...
     def add_artifact(self, artifact: Artifact) -> None: ...
     def get_artifact(self, artifact_id: ArtifactId) -> Artifact | None: ...
+
+
+class ResourceRepository(Protocol):
+    def add_repository(self, binding: RepositoryBinding) -> None: ...
+    def get_repository(self, repository: str) -> RepositoryBinding | None: ...
 
 
 class InboxRepository(Protocol):

@@ -100,6 +100,24 @@ class Project:
         _require_text(self.name, "Project name")
 
 
+@dataclass(frozen=True, slots=True)
+class RepositoryBinding:
+    repository: str
+    project_id: ProjectId
+    controlling_owner_id: OwnerId
+
+    def __post_init__(self) -> None:
+        validate_repository_name(self.repository)
+        _require_type(self.project_id, ProjectId, "project_id")
+        _require_type(self.controlling_owner_id, OwnerId, "controlling_owner_id")
+
+
+def validate_repository_name(repository: str) -> None:
+    _require_text(repository, "Repository")
+    if len(repository) > 255:
+        raise DomainValidationError("Repository must not exceed 255 characters")
+
+
 def _require_type(value: object, expected: type[object], field: str) -> None:
     if not isinstance(value, expected):
         raise TypeError(f"{field} must be {expected.__name__}")
