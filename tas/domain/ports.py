@@ -19,6 +19,7 @@ from .collaboration import Artifact, ArtifactId, Task, TaskId, TaskMessage, Task
 from .delivery import InboxItem, InboxItemId, LeaseToken
 from .approval import Approval, ApprovalId
 from .audit import AuditEvent, AuditEventId
+from .action_execution import ActionExecutionRequest, ActionReceipt, GrantReservation
 from .idempotency import (
     IdempotencyKey,
     IdempotencyRecord,
@@ -79,6 +80,26 @@ class AuditRepository(Protocol):
     def list_for_resource(
         self, resource_type: str, resource_id: str
     ) -> tuple[AuditEvent, ...]: ...
+
+
+class ActionGrantRepository(Protocol):
+    def get(
+        self, approval_id: ApprovalId, request_fingerprint: str
+    ) -> GrantReservation | None: ...
+    def reserve(
+        self, approval_id: ApprovalId, request_fingerprint: str, started_at: datetime
+    ) -> GrantReservation: ...
+    def complete(
+        self, approval_id: ApprovalId, request_fingerprint: str, receipt: ActionReceipt
+    ) -> ActionReceipt: ...
+
+
+class ExternalActionExecutor(Protocol):
+    def check_preconditions(self, request: ActionExecutionRequest) -> None: ...
+    def find_receipt(self, operation_id: str) -> ActionReceipt | None: ...
+    def execute_once(
+        self, request: ActionExecutionRequest, request_fingerprint: str
+    ) -> ActionReceipt: ...
 
 
 class InboxRepository(Protocol):

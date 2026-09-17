@@ -65,7 +65,7 @@ That is the experience we are working toward.
 
 ## Current progress
 
-TAS is currently in **F2 / M3 technical validation**.
+TAS is currently in **F2 / M4 technical validation**. The trusted-control-flow milestone is now complete in the controlled F2 environment.
 
 Working engineering prototypes now cover:
 
@@ -76,6 +76,9 @@ Working engineering prototypes now cover:
 - recovery across real MCP and Remote Agent process restarts;
 - idempotent task creation and replay;
 - receiver-owned, versioned Policy decisions with `allow`, `deny`, and `approval_required` outcomes;
+- human Approval lifecycle, resource-level authorization, and persistent security Audit events;
+- single-consumption Approval Grants with execution-time Policy/resource/workspace/commit checks;
+- durable Action Receipts with idempotent recovery across response loss and process restart;
 - structured Messages, Artifacts, task states, and transition history;
 - a lightweight TypeScript client.
 
@@ -83,9 +86,9 @@ These are technical-validation results, not a claim that the complete product is
 
 ## Where we are going
 
-### Now — Trusted control flow
+### Now — Evidence you can challenge
 
-Approval lifecycle, Audit records, resource-level authorization, Policy and Approval integration, and stronger evidence boundaries.
+Git and test evidence collection, Work Records, claim-versus-observation separation, epistemic status, and adversarial checks that prevent an Agent’s confident statement from becoming “validated” without support.
 
 ### Next — Real multi-Owner validation
 
@@ -240,17 +243,17 @@ TAS 希望把这些问题变成明确的工程边界，而不是继续依赖 Pro
 
 ## 当前进展
 
-TAS 目前处于 **F2 / M3 技术验证阶段**。
+TAS 目前处于 **F2 / M4 技术验证阶段**。可信控制流程里程碑已经在 F2 受控环境中完成。
 
-项目已经建立并验证了：解耦的 Domain/Application 核心、MCP 工具发现与调用、本地测试凭据身份绑定、官方 A2A SDK 互操作、最小 MCP→A2A 委派、持久化 Inbox、Claim/Lease/Retry/Acknowledge/Dead Letter、真实进程重启恢复、幂等创建与 Replay、接收方版本化 Policy、`allow`/`deny`/`approval_required` 决策、结构化 Message/Artifact/Task 历史，以及轻量 TypeScript Client。
+项目已经建立并验证了：解耦的 Domain/Application 核心、MCP 工具发现与调用、本地测试凭据身份绑定、官方 A2A SDK 互操作、最小 MCP→A2A 委派、持久化 Inbox、Claim/Lease/Retry/Acknowledge/Dead Letter、真实进程重启恢复、幂等创建与 Replay、接收方版本化 Policy、`allow`/`deny`/`approval_required` 决策、人工 Approval 生命周期、资源级授权、安全 Audit、单次 Approval Grant、执行时 Policy/资源/Workspace/Commit 复核、可在响应丢失和进程重启后对账的 Action Receipt、结构化 Message/Artifact/Task 历史，以及轻量 TypeScript Client。
 
 这些是已经形成工程证据的技术验证结果，但不代表完整产品已经可以投入使用。
 
 ## 接下来会发生什么？
 
-### 现在：可信控制流程
+### 现在：经得起质疑的工程证据
 
-继续完善 Approval 生命周期、Audit 记录、资源级授权、Policy 与 Approval 的组合，以及更严格的 Evidence 边界。
+接下来将推进 Git/Test Evidence Collector、Work Record、声明与观察事实分离、认知状态规则和对抗测试，让 Agent 充满信心的陈述不能在缺乏证据时被直接升级为“已验证”。
 
 ### 下一阶段：真实多 Owner 验证
 
