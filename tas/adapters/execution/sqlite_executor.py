@@ -9,12 +9,9 @@ from uuid import uuid4
 from tas.domain.action_execution import (
     ActionExecutionRequest,
     ActionReceipt,
-    ExternalActionRejectedError,
+    ExternalOperationConflictError,
+    ExternalPreconditionChangedError,
 )
-
-
-class ExternalActionConflictError(ExternalActionRejectedError):
-    """The operation ID or execution preconditions conflict with external facts."""
 
 
 class SQLiteExternalActionExecutor:
@@ -88,7 +85,7 @@ class SQLiteExternalActionExecutor:
             request.preconditions.commit_sha,
         )
         if current != expected:
-            raise ExternalActionConflictError(
+            raise ExternalPreconditionChangedError(
                 "external resource preconditions no longer match"
             )
 
@@ -106,7 +103,7 @@ class SQLiteExternalActionExecutor:
             if existing is not None:
                 receipt = self._restore(existing)
                 if receipt.request_fingerprint != request_fingerprint:
-                    raise ExternalActionConflictError(
+                    raise ExternalOperationConflictError(
                         "operation ID was used for another exact request"
                     )
                 return receipt
@@ -120,7 +117,7 @@ class SQLiteExternalActionExecutor:
                 request.preconditions.commit_sha,
             )
             if current != expected:
-                raise ExternalActionConflictError(
+                raise ExternalPreconditionChangedError(
                     "external resource preconditions no longer match"
                 )
             occurred_at = datetime.now(UTC)

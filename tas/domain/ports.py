@@ -19,7 +19,12 @@ from .collaboration import Artifact, ArtifactId, Task, TaskId, TaskMessage, Task
 from .delivery import InboxItem, InboxItemId, LeaseToken
 from .approval import Approval, ApprovalId
 from .audit import AuditEvent, AuditEventId
-from .action_execution import ActionExecutionRequest, ActionReceipt, GrantReservation
+from .action_execution import (
+    ActionExecutionRequest,
+    ActionReceipt,
+    GrantReservation,
+    ReceiptSource,
+)
 from .idempotency import (
     IdempotencyKey,
     IdempotencyRecord,
@@ -90,8 +95,15 @@ class ActionGrantRepository(Protocol):
         self, approval_id: ApprovalId, request_fingerprint: str, started_at: datetime
     ) -> GrantReservation: ...
     def complete(
-        self, approval_id: ApprovalId, request_fingerprint: str, receipt: ActionReceipt
-    ) -> ActionReceipt: ...
+        self,
+        approval_id: ApprovalId,
+        request_fingerprint: str,
+        receipt: ActionReceipt,
+        receipt_source: ReceiptSource,
+    ) -> GrantReservation: ...
+    def mark_audited(
+        self, approval_id: ApprovalId, request_fingerprint: str, event_id: AuditEventId
+    ) -> None: ...
 
 
 class ExternalActionExecutor(Protocol):

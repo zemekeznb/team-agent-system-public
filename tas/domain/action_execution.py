@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 
 from .approval import ApprovalId
 from .identity import DomainValidationError
@@ -12,6 +13,18 @@ from .policy import ActionIntent
 
 class ExternalActionRejectedError(RuntimeError):
     """The external system authoritatively rejected this exact action."""
+
+
+class ExternalPreconditionChangedError(ExternalActionRejectedError):
+    """The external resource no longer matches approved preconditions."""
+
+
+class ExternalOperationConflictError(ExternalActionRejectedError):
+    """The external operation ID belongs to another exact request."""
+
+
+class GrantConsumptionConflictError(RuntimeError):
+    """A Grant was reserved or completed with another exact request."""
 
 
 def _text(value: str, field: str) -> None:
@@ -83,3 +96,10 @@ class ActionReceipt:
 class GrantReservation:
     is_new: bool
     receipt: ActionReceipt | None
+    receipt_source: ReceiptSource | None = None
+    audit_pending: bool = False
+
+
+class ReceiptSource(StrEnum):
+    EXECUTED = "executed"
+    RECONCILED = "reconciled"

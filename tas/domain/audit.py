@@ -36,6 +36,10 @@ class AuditEventId:
 class AuditEventKind(StrEnum):
     AUTHORIZATION_DECISION = "authorization_decision"
     TASK_TRANSITION_REJECTED = "task_transition_rejected"
+    ACTION_GRANT_CONSUMED = "action_grant_consumed"
+    ACTION_GRANT_REJECTED = "action_grant_rejected"
+    ACTION_RESULT_UNKNOWN = "action_result_unknown"
+    ACTION_RECEIPT_RECONCILED = "action_receipt_reconciled"
 
 
 class AuditActorKind(StrEnum):
@@ -49,6 +53,23 @@ class AuditOutcome(StrEnum):
     DENY = "deny"
     APPROVAL_REQUIRED = "approval_required"
     REJECTED = "rejected"
+    CONSUMED = "consumed"
+    RESULT_UNKNOWN = "result_unknown"
+    RECONCILED = "reconciled"
+
+
+class ActionGrantAuditReason(StrEnum):
+    CONSUMED = "grant_consumed"
+    RECEIPT_RECONCILED = "receipt_reconciled"
+    CALLER_NOT_RECEIVER = "caller_not_receiver"
+    APPROVAL_NOT_APPROVED = "approval_not_approved"
+    INTENT_MISMATCH = "intent_mismatch"
+    APPROVAL_EXPIRED = "approval_expired"
+    POLICY_VERSION_CHANGED = "policy_version_changed"
+    AUTHORIZATION_CHANGED = "authorization_changed"
+    PRECONDITION_CHANGED = "precondition_changed"
+    OPERATION_CONFLICT = "operation_conflict"
+    EXTERNAL_RESULT_UNKNOWN = "external_result_unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +85,7 @@ class AuditEvent:
     reason: str
     occurred_at: datetime
     policy_version: str | None = None
+    correlation_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, AuditEventId):
@@ -85,3 +107,5 @@ class AuditEvent:
         _utc(self.occurred_at, "occurred_at")
         if self.policy_version is not None:
             _text(self.policy_version, "policy_version")
+        if self.correlation_id is not None:
+            _text(self.correlation_id, "correlation_id")

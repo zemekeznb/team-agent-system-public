@@ -30,8 +30,8 @@ class SQLiteAuditRepository:
                 connection.execute(
                     "INSERT INTO tas_audit_events "
                     "(id,kind,actor_kind,actor_id,resource_type,resource_id,action,"
-                    "outcome,reason,occurred_at,policy_version) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "outcome,reason,occurred_at,policy_version,correlation_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         event.id.value,
                         event.kind.value,
@@ -44,6 +44,7 @@ class SQLiteAuditRepository:
                         event.reason,
                         event.occurred_at.isoformat(),
                         event.policy_version,
+                        event.correlation_id,
                     ),
                 )
         except sqlite3.IntegrityError as error:
@@ -54,6 +55,7 @@ class SQLiteAuditRepository:
             row = connection.execute(
                 "SELECT id,kind,actor_kind,actor_id,resource_type,resource_id,action,"
                 "outcome,reason,occurred_at,policy_version "
+                ",correlation_id "
                 "FROM tas_audit_events WHERE id=?",
                 (event_id.value,),
             ).fetchone()
@@ -66,6 +68,7 @@ class SQLiteAuditRepository:
             rows = connection.execute(
                 "SELECT id,kind,actor_kind,actor_id,resource_type,resource_id,action,"
                 "outcome,reason,occurred_at,policy_version "
+                ",correlation_id "
                 "FROM tas_audit_events WHERE resource_type=? AND resource_id=? "
                 "ORDER BY occurred_at,id",
                 (resource_type, resource_id),
@@ -88,4 +91,5 @@ class SQLiteAuditRepository:
             str(row[8]),
             datetime.fromisoformat(str(row[9])),
             None if row[10] is None else str(row[10]),
+            None if row[11] is None else str(row[11]),
         )

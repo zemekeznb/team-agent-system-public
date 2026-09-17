@@ -4,12 +4,16 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from tas.domain.audit import (
+    ActionGrantAuditReason,
     AuditActorKind,
     AuditEvent,
     AuditEventId,
     AuditEventKind,
     AuditOutcome,
 )
+from tas.domain.approval import ApprovalId
+from tas.domain.identity import AgentId
+from tas.domain.policy import ActionIntent
 from tas.domain.collaboration import Task, TaskStatus
 from tas.domain.ports import AuditRepository
 
@@ -65,4 +69,38 @@ class AuditRecorder:
             datetime.now(UTC),
         )
         self.repository.add(event)
+        return event
+
+    def action_grant_event(
+        self,
+        *,
+        event_id: AuditEventId,
+        kind: AuditEventKind,
+        actor_id: AgentId,
+        approval_id: ApprovalId,
+        intent: ActionIntent,
+        outcome: AuditOutcome,
+        reason: ActionGrantAuditReason,
+        occurred_at: datetime,
+        policy_version: str | None,
+    ) -> AuditEvent:
+        event = AuditEvent(
+            event_id,
+            kind,
+            AuditActorKind.AGENT,
+            actor_id.value,
+            "repository",
+            intent.repository,
+            intent.action.value,
+            outcome,
+            reason.value,
+            occurred_at,
+            policy_version,
+            approval_id.value,
+        )
+        existing = self.repository.get(event_id)
+        if existing is None:
+            self.repository.add(event)
+        elif existing != event:
+            raise RuntimeError("stable Action Grant audit event conflicts")
         return event

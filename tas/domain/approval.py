@@ -21,8 +21,14 @@ class ApprovalId:
     value: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.value, str) or not self.value.strip():
-            raise DomainValidationError("ApprovalId must not be blank")
+        if (
+            not isinstance(self.value, str)
+            or not self.value.strip()
+            or len(self.value) > 255
+        ):
+            raise DomainValidationError(
+                "ApprovalId must be 1..255 non-whitespace characters"
+            )
 
 
 class ApprovalStatus(StrEnum):
