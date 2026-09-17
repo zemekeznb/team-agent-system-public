@@ -18,6 +18,7 @@ from .identity import (
 from .collaboration import Artifact, ArtifactId, Task, TaskId, TaskMessage, TaskMessageId
 from .delivery import InboxItem, InboxItemId, LeaseToken
 from .approval import Approval, ApprovalId
+from .audit import AuditEvent, AuditEventId
 from .idempotency import (
     IdempotencyKey,
     IdempotencyRecord,
@@ -36,6 +37,10 @@ class DuplicateIdentityError(IdentityPersistenceError):
 
 class IdentityReferenceError(IdentityPersistenceError):
     """Raised when an aggregate references an unknown identity."""
+
+
+class DuplicateAuditEventError(RuntimeError):
+    """Raised when an immutable Audit Event cannot be appended."""
 
 
 class IdentityRepository(Protocol):
@@ -66,6 +71,14 @@ class TaskRepository(Protocol):
 class ResourceRepository(Protocol):
     def add_repository(self, binding: RepositoryBinding) -> None: ...
     def get_repository(self, repository: str) -> RepositoryBinding | None: ...
+
+
+class AuditRepository(Protocol):
+    def add(self, event: AuditEvent) -> None: ...
+    def get(self, event_id: AuditEventId) -> AuditEvent | None: ...
+    def list_for_resource(
+        self, resource_type: str, resource_id: str
+    ) -> tuple[AuditEvent, ...]: ...
 
 
 class InboxRepository(Protocol):
