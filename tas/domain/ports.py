@@ -31,6 +31,7 @@ from .idempotency import (
     OperationName,
     RequestFingerprint,
 )
+from .work_record import WorkRecord, WorkRecordId
 
 
 class IdentityPersistenceError(RuntimeError):
@@ -47,6 +48,18 @@ class IdentityReferenceError(IdentityPersistenceError):
 
 class DuplicateAuditEventError(RuntimeError):
     """Raised when an immutable Audit Event cannot be appended."""
+
+
+class WorkRecordPersistenceError(RuntimeError):
+    """Base error exposed by Work Record persistence ports."""
+
+
+class DuplicateWorkRecordError(WorkRecordPersistenceError):
+    """Raised when an immutable Work Record or Evidence ID conflicts."""
+
+
+class WorkRecordReferenceError(WorkRecordPersistenceError):
+    """Raised when a Work Record references an unknown aggregate."""
 
 
 class IdentityRepository(Protocol):
@@ -85,6 +98,12 @@ class AuditRepository(Protocol):
     def list_for_resource(
         self, resource_type: str, resource_id: str
     ) -> tuple[AuditEvent, ...]: ...
+
+
+class WorkRecordRepository(Protocol):
+    def add(self, record: WorkRecord) -> None: ...
+    def get(self, record_id: WorkRecordId) -> WorkRecord | None: ...
+    def list_for_task(self, task_id: TaskId) -> tuple[WorkRecord, ...]: ...
 
 
 class ActionGrantRepository(Protocol):
