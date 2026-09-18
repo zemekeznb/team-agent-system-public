@@ -3,11 +3,12 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+import re
 
 from .collaboration import TaskId
 from .epistemic import EpistemicEvent, EpistemicEventId, EpistemicStatus
 from .evidence import EvidenceId
-from .identity import AgentId, DomainValidationError
+from .identity import AgentId, DomainValidationError, ProjectId, TeamId
 from .work_record import WorkRecord, WorkRecordId, WorkRecordType
 
 
@@ -63,6 +64,31 @@ class TeamMemory:
         if self.applicability_status is not ApplicabilityStatus.UNKNOWN: raise DomainValidationError("new Memory applicability must be unknown")
         if self.promotion_rule_id != "validated_work_record_v1": raise DomainValidationError("promotion rule is unsupported")
         if not isinstance(self.promoted_at, datetime) or self.promoted_at.tzinfo is None or self.promoted_at.utcoffset() != timedelta(0): raise DomainValidationError("promoted_at must use UTC")
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySearchQuery:
+    text: str
+    team_id: TeamId
+    project_id: ProjectId
+    validation_status: MemoryValidationStatus | None = None
+    applicability_status: ApplicabilityStatus | None = None
+    limit: int = 20
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str) or not self.text.strip() or len(self.text) > 1024:
+            raise DomainValidationError("search text must be 1..1024 characters")
+        terms = re.findall(r"\w+", self.text, flags=re.UNICODE)
+        if not terms or len(terms) > 32 or any(ord(character) < 32 and not character.isspace() for character in self.text):
+            raise DomainValidationError("search text must contain 1..32 safe terms")
+        if not isinstance(self.team_id, TeamId) or not isinstance(self.project_id, ProjectId):
+            raise TypeError("search scope must use TeamId and ProjectId")
+        if self.validation_status is not None and not isinstance(self.validation_status, MemoryValidationStatus):
+            raise TypeError("validation_status must use MemoryValidationStatus")
+        if self.applicability_status is not None and not isinstance(self.applicability_status, ApplicabilityStatus):
+            raise TypeError("applicability_status must use ApplicabilityStatus")
+        if not isinstance(self.limit, int) or isinstance(self.limit, bool) or not 1 <= self.limit <= 100:
+            raise DomainValidationError("search limit must be 1..100")
 
 
 def promote_validated_work_record(record: WorkRecord, history: tuple[EpistemicEvent, ...], *, memory_id: MemoryId, promoted_by: AgentId, promoted_at: datetime) -> TeamMemory:

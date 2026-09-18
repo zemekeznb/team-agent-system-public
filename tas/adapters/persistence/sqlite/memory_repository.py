@@ -1,6 +1,7 @@
 """SQLite persistence for atomic Work Record promotion."""
 
 import sqlite3
+import re
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from tas.domain.collaboration import TaskId
 from tas.domain.epistemic import EpistemicEventId
 from tas.domain.evidence import EvidenceId
 from tas.domain.identity import AgentId
-from tas.domain.memory import ApplicabilityStatus, MemoryId, MemoryValidationStatus, TeamMemory
+from tas.domain.memory import ApplicabilityStatus, MemoryId, MemorySearchQuery, MemoryValidationStatus, TeamMemory
 from tas.domain.ports import MemoryPersistenceError
 from tas.domain.work_record import WorkRecordId, WorkRecordType
 
@@ -58,3 +59,26 @@ class SQLiteMemoryRepository:
             if row is None: return None
             evidence=tuple(EvidenceId(str(item[0])) for item in connection.execute("SELECT evidence_id FROM tas_team_memory_evidence WHERE memory_id=? ORDER BY sequence",(memory_id.value,)))
         return TeamMemory(MemoryId(str(row[0])),WorkRecordId(str(row[1])),EpistemicEventId(str(row[2])),TaskId(str(row[3])),AgentId(str(row[4])),AgentId(str(row[5])),WorkRecordType(str(row[6])),str(row[7]),str(row[8]),evidence,MemoryValidationStatus(str(row[9])),ApplicabilityStatus(str(row[10])),str(row[11]),datetime.fromisoformat(str(row[12])))
+
+    def search(self, query: MemorySearchQuery) -> tuple[TeamMemory, ...]:
+        match = " AND ".join(f'"{token}"' for token in re.findall(r"\w+", query.text, flags=re.UNICODE))
+        clauses = ["p.team_id=?", "m.task_id=t.id", "t.project_id=?"]
+        values: list[object] = [match, query.team_id.value, query.project_id.value]
+        if query.validation_status is not None:
+            clauses.append("m.validation_status=?")
+            values.append(query.validation_status.value)
+        if query.applicability_status is not None:
+            clauses.append("m.applicability_status=?")
+            values.append(query.applicability_status.value)
+        values.append(query.limit)
+        sql = (
+            "SELECT m.id FROM tas_team_memories_fts f "
+            "JOIN tas_team_memories m ON m.rowid=f.rowid "
+            "JOIN tas_tasks t ON t.id=m.task_id "
+            "JOIN tas_projects p ON p.id=t.project_id "
+            "WHERE tas_team_memories_fts MATCH ? AND " + " AND ".join(clauses) +
+            " ORDER BY bm25(tas_team_memories_fts),m.promoted_at,m.id LIMIT ?"
+        )
+        with closing(self._connect()) as connection:
+            ids = [MemoryId(str(row[0])) for row in connection.execute(sql, values)]
+        return tuple(item for identifier in ids if (item := self.get(identifier)) is not None)
