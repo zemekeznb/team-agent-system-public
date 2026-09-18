@@ -8,7 +8,7 @@ It does not replace Codex, Claude Code, Cursor, or other agents, and it does not
 
 > **Requests may cross Owner boundaries. Execution authority, factual judgment, and responsibility must not travel with them.**
 
-**Current status: F2 / M4 technical validation. TAS is not an MVP or a production-ready service, and it has not yet completed end-to-end validation with two real independent Owners.**
+**Current status: F2 / M5 technical validation. TAS is not an MVP or a production-ready service, and it has not yet completed end-to-end validation with two real independent Owners.**
 
 ## How one collaboration should work
 
@@ -71,7 +71,7 @@ Whether an old conclusion remains useful depends on the Commit, paths, and envir
 | Single-use authorization and execution reconciliation | Validated in F2 | Approval Grant, Action Receipt, execution-time checks |
 | Git and test Evidence | Validated in F2 | Controlled local Worktree and subprocess |
 | Claim / observed-fact separation | Validated in F2 | Append-only Work Records and Evidence snapshots |
-| Epistemic Status | In progress | `claimed`, `observed`, `validated`, `conflicted` |
+| Epistemic Status | Validated in F2 | Append-only history and one controlled adversarial test-result rule |
 | Team Memory and applicability-aware retrieval | Not implemented | Later milestone |
 | Two-real-Owner collaboration | Not run | Required in F3 |
 | Production deployment | Not implemented | No production-readiness claim |
@@ -80,7 +80,7 @@ Whether an old conclusion remains useful depends on the Commit, paths, and envir
 
 ## What comes next
 
-- **Finish M4:** define Epistemic Status and adversarial rules so a false “tests passed” claim cannot become validated without Evidence.
+- **Build M5:** promote only eligible Work Records into versioned Team Memory, then add scoped retrieval, applicability checks, staleness, and supersession.
 - **Enter F3:** run end-to-end collaboration with two real independent Owners, credentials, and Agent environments.
 - **Continue evolving:** build a controlled Agent directory, impact routing, approval experience, Evidence review, and applicability-aware Team Memory.
 
@@ -114,7 +114,7 @@ Team Agent System（TAS）是一个协作与可信记忆中间件。
 
 > **请求可以跨越 Owner 边界，但执行权、事实判断和责任不能随请求一起传播。**
 
-**当前状态：F2 / M4 技术验证阶段。不是 MVP，不是生产可用服务，尚未由两位真实独立 Owner 完成端到端验证。**
+**当前状态：F2 / M5 技术验证阶段。不是 MVP，不是生产可用服务，尚未由两位真实独立 Owner 完成端到端验证。**
 
 ## 一次协作如何发生
 
@@ -177,7 +177,7 @@ Agent 说“测试通过”，与 TAS 采集到“退出码 0、12 passed”是�
 | 单次授权与执行对账 | F2 已验证 | Approval Grant、Action Receipt、执行前复核 |
 | Git/Test Evidence | F2 已验证 | 本机受控 Worktree 与 subprocess |
 | Claim 与 observed fact 分离 | F2 已验证 | append-only Work Record 与 Evidence snapshot |
-| Epistemic Status | 正在验证 | `claimed`、`observed`、`validated`、`conflicted` |
+| Epistemic Status | F2 已验证 | append-only 历史与一条受控测试结果对抗规则 |
 | Team Memory 与适用性检索 | 尚未完成 | 后续里程碑 |
 | 两个真实 Owner 协作 | 尚未运行 | F3 强制验证项 |
 | 生产部署 | 尚未完成 | 不声称生产可用 |
@@ -186,7 +186,7 @@ Agent 说“测试通过”，与 TAS 采集到“退出码 0、12 passed”是�
 
 ## 接下来会发生什么
 
-- **完成 M4：** 建立 Epistemic Status 和对抗规则，确保虚假“测试通过”不能在缺少 Evidence 时成为 validated。
+- **推进 M5：** 只把满足条件的 Work Record 提升为版本化 Team Memory，并逐步建立范围检索、适用性判断、过期检测与修订替代。
 - **进入 F3：** 由两位真实独立 Owner，使用独立身份、凭据和 Agent 环境完成端到端协作。
 - **继续演进：** 推进受控 Agent 目录、影响路由、审批体验、Evidence 审查和带适用范围的 Team Memory。
 
