@@ -32,6 +32,7 @@ from .idempotency import (
     RequestFingerprint,
 )
 from .work_record import WorkRecord, WorkRecordId
+from .epistemic import EpistemicEvent
 
 
 class IdentityPersistenceError(RuntimeError):
@@ -60,6 +61,10 @@ class DuplicateWorkRecordError(WorkRecordPersistenceError):
 
 class WorkRecordReferenceError(WorkRecordPersistenceError):
     """Raised when a Work Record references an unknown aggregate."""
+
+
+class EpistemicPersistenceError(RuntimeError):
+    """Raised when epistemic history cannot be appended consistently."""
 
 
 class IdentityRepository(Protocol):
@@ -104,6 +109,11 @@ class WorkRecordRepository(Protocol):
     def add(self, record: WorkRecord) -> None: ...
     def get(self, record_id: WorkRecordId) -> WorkRecord | None: ...
     def list_for_task(self, task_id: TaskId) -> tuple[WorkRecord, ...]: ...
+
+
+class EpistemicRepository(Protocol):
+    def history(self, record_id: WorkRecordId) -> tuple[EpistemicEvent, ...]: ...
+    def append(self, event: EpistemicEvent) -> None: ...
 
 
 class ActionGrantRepository(Protocol):

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tas.domain.collaboration import TaskId
 from tas.domain.evidence import EvidenceId
+from tas.domain.epistemic import EpistemicEventId, initial_epistemic_event
 from tas.domain.identity import AgentId
 from tas.domain.ports import DuplicateWorkRecordError, WorkRecordReferenceError
 from tas.domain.work_record import (
@@ -70,6 +71,35 @@ class SQLiteWorkRecordRepository:
                     [
                         (record.id.value, index, evidence.id.value)
                         for index, evidence in enumerate(record.observed, start=1)
+                    ],
+                )
+                initial = initial_epistemic_event(
+                    record,
+                    event_id=EpistemicEventId(f"initial:{record.id.value}"),
+                    occurred_at=record.created_at,
+                )
+                connection.execute(
+                    "INSERT INTO tas_epistemic_events "
+                    "(id,work_record_id,sequence,from_status,to_status,rule_id,occurred_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (
+                        initial.id.value,
+                        initial.work_record_id.value,
+                        initial.sequence,
+                        None,
+                        initial.to_status.value,
+                        initial.rule_id,
+                        initial.occurred_at.isoformat(),
+                    ),
+                )
+                connection.executemany(
+                    "INSERT INTO tas_epistemic_event_evidence "
+                    "(epistemic_event_id,sequence,evidence_id) VALUES (?,?,?)",
+                    [
+                        (initial.id.value, index, evidence_id.value)
+                        for index, evidence_id in enumerate(
+                            initial.evidence_ids, start=1
+                        )
                     ],
                 )
         except DuplicateWorkRecordError:
