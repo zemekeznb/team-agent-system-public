@@ -87,11 +87,12 @@ class SQLiteMemoryRepository:
 
     def add_code_scope(self, scope: MemoryCodeScope) -> None:
         with closing(self._connect()) as connection, connection:
-            row=connection.execute("SELECT m.task_id,e.payload_json FROM tas_team_memories m JOIN tas_observed_evidence e ON e.id=? WHERE m.id=? AND EXISTS(SELECT 1 FROM tas_team_memory_evidence l WHERE l.memory_id=m.id AND l.evidence_id=e.id)",(scope.source_evidence_id.value,scope.memory_id.value)).fetchone()
+            row=connection.execute("SELECT m.task_id,e.kind,e.payload_json FROM tas_team_memories m JOIN tas_observed_evidence e ON e.id=? WHERE m.id=? AND EXISTS(SELECT 1 FROM tas_team_memory_evidence l WHERE l.memory_id=m.id AND l.evidence_id=e.id)",(scope.source_evidence_id.value,scope.memory_id.value)).fetchone()
             if row is None: raise MemoryPersistenceError("scope Evidence is not cited by Memory")
+            if str(row[1]) != "git": raise MemoryPersistenceError("code scope requires cited Git Evidence")
             project=connection.execute("SELECT project_id FROM tas_tasks WHERE id=?",(str(row[0]),)).fetchone()
             binding=connection.execute("SELECT project_id FROM tas_repository_bindings WHERE repository=?",(scope.repository,)).fetchone()
-            payload=json.loads(str(row[1]))
+            payload=json.loads(str(row[2]))
             expected=(payload.get("repository"),payload.get("branch"),payload.get("head_commit"),tuple(sorted(item.get("path") for item in payload.get("files",[]))))
             if binding is None or project is None or binding[0] != project[0] or expected != (scope.repository,scope.ref,scope.commit,scope.paths): raise MemoryPersistenceError("code scope does not match Git Evidence and Project binding")
             try:
