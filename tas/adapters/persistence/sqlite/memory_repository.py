@@ -1,0 +1,60 @@
+"""SQLite persistence for atomic Work Record promotion."""
+
+import sqlite3
+from contextlib import closing
+from datetime import datetime
+from pathlib import Path
+
+from tas.domain.collaboration import TaskId
+from tas.domain.epistemic import EpistemicEventId
+from tas.domain.evidence import EvidenceId
+from tas.domain.identity import AgentId
+from tas.domain.memory import ApplicabilityStatus, MemoryId, MemoryValidationStatus, TeamMemory
+from tas.domain.ports import MemoryPersistenceError
+from tas.domain.work_record import WorkRecordId, WorkRecordType
+
+
+class SQLiteMemoryRepository:
+    def __init__(self, database: str | Path) -> None: self.database = Path(database)
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database, isolation_level=None)
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=5000")
+        return connection
+
+    def add(self, memory: TeamMemory) -> None:
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                source = connection.execute(
+                    "SELECT task_id,actor_agent_id,record_type,claim_text "
+                    "FROM tas_work_records WHERE id=?",
+                    (memory.source_work_record_id.value,),
+                ).fetchone()
+                expected_source = (
+                    memory.task_id.value,
+                    memory.source_actor_id.value,
+                    memory.record_type.value,
+                    memory.content,
+                )
+                if source != expected_source:
+                    raise MemoryPersistenceError("Memory does not match its source Work Record")
+                latest = connection.execute("SELECT id,to_status,rule_id FROM tas_epistemic_events WHERE work_record_id=? ORDER BY sequence DESC LIMIT 1", (memory.source_work_record_id.value,)).fetchone()
+                if latest != (memory.source_validation_event_id.value, "validated", memory.validation_rule_id):
+                    raise MemoryPersistenceError("source Work Record is no longer validated by the cited event")
+                actual = tuple(EvidenceId(str(row[0])) for row in connection.execute("SELECT evidence_id FROM tas_epistemic_event_evidence WHERE epistemic_event_id=? ORDER BY sequence", (memory.source_validation_event_id.value,)))
+                if actual != memory.evidence_ids: raise MemoryPersistenceError("validation Evidence snapshot changed")
+                connection.execute("INSERT INTO tas_team_memories VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (memory.id.value,memory.source_work_record_id.value,memory.source_validation_event_id.value,memory.task_id.value,memory.source_actor_id.value,memory.promoted_by_agent_id.value,memory.record_type.value,memory.content,memory.validation_rule_id,memory.validation_status.value,memory.applicability_status.value,memory.promotion_rule_id,memory.promoted_at.isoformat()))
+                connection.executemany("INSERT INTO tas_team_memory_evidence VALUES (?,?,?)", [(memory.id.value,i,item.value) for i,item in enumerate(memory.evidence_ids,1)])
+                connection.execute("COMMIT")
+            except MemoryPersistenceError:
+                connection.execute("ROLLBACK"); raise
+            except sqlite3.IntegrityError as error:
+                connection.execute("ROLLBACK"); raise MemoryPersistenceError("Memory could not be promoted") from error
+
+    def get(self, memory_id: MemoryId) -> TeamMemory | None:
+        with closing(self._connect()) as connection:
+            row=connection.execute("SELECT * FROM tas_team_memories WHERE id=?",(memory_id.value,)).fetchone()
+            if row is None: return None
+            evidence=tuple(EvidenceId(str(item[0])) for item in connection.execute("SELECT evidence_id FROM tas_team_memory_evidence WHERE memory_id=? ORDER BY sequence",(memory_id.value,)))
+        return TeamMemory(MemoryId(str(row[0])),WorkRecordId(str(row[1])),EpistemicEventId(str(row[2])),TaskId(str(row[3])),AgentId(str(row[4])),AgentId(str(row[5])),WorkRecordType(str(row[6])),str(row[7]),str(row[8]),evidence,MemoryValidationStatus(str(row[9])),ApplicabilityStatus(str(row[10])),str(row[11]),datetime.fromisoformat(str(row[12])))

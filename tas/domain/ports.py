@@ -33,6 +33,7 @@ from .idempotency import (
 )
 from .work_record import WorkRecord, WorkRecordId
 from .epistemic import EpistemicEvent
+from .memory import TeamMemory, MemoryId
 
 
 class IdentityPersistenceError(RuntimeError):
@@ -65,6 +66,9 @@ class WorkRecordReferenceError(WorkRecordPersistenceError):
 
 class EpistemicPersistenceError(RuntimeError):
     """Raised when epistemic history cannot be appended consistently."""
+
+class MemoryPersistenceError(RuntimeError):
+    """Raised when Memory promotion cannot be committed consistently."""
 
 
 class IdentityRepository(Protocol):
@@ -114,6 +118,10 @@ class WorkRecordRepository(Protocol):
 class EpistemicRepository(Protocol):
     def history(self, record_id: WorkRecordId) -> tuple[EpistemicEvent, ...]: ...
     def append(self, event: EpistemicEvent) -> None: ...
+
+class MemoryRepository(Protocol):
+    def add(self, memory: TeamMemory) -> None: ...
+    def get(self, memory_id: MemoryId) -> TeamMemory | None: ...
 
 
 class ActionGrantRepository(Protocol):
