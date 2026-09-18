@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 import re
+from pathlib import PurePosixPath
 
 from .collaboration import TaskId
 from .epistemic import EpistemicEvent, EpistemicEventId, EpistemicStatus
 from .evidence import EvidenceId
-from .identity import AgentId, DomainValidationError, ProjectId, TeamId
+from .identity import AgentId, DomainValidationError, ProjectId, TeamId, validate_repository_name
 from .work_record import WorkRecord, WorkRecordId, WorkRecordType
 
 
@@ -71,6 +72,7 @@ class MemorySearchQuery:
     text: str
     team_id: TeamId
     project_id: ProjectId
+    repository: str
     validation_status: MemoryValidationStatus | None = None
     applicability_status: ApplicabilityStatus | None = None
     limit: int = 20
@@ -83,12 +85,32 @@ class MemorySearchQuery:
             raise DomainValidationError("search text must contain 1..32 safe terms")
         if not isinstance(self.team_id, TeamId) or not isinstance(self.project_id, ProjectId):
             raise TypeError("search scope must use TeamId and ProjectId")
+        validate_repository_name(self.repository)
         if self.validation_status is not None and not isinstance(self.validation_status, MemoryValidationStatus):
             raise TypeError("validation_status must use MemoryValidationStatus")
         if self.applicability_status is not None and not isinstance(self.applicability_status, ApplicabilityStatus):
             raise TypeError("applicability_status must use ApplicabilityStatus")
         if not isinstance(self.limit, int) or isinstance(self.limit, bool) or not 1 <= self.limit <= 100:
             raise DomainValidationError("search limit must be 1..100")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryCodeScope:
+    memory_id: MemoryId
+    source_evidence_id: EvidenceId
+    repository: str
+    ref: str
+    commit: str
+    paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        validate_repository_name(self.repository)
+        if not isinstance(self.ref, str) or not self.ref.strip() or len(self.ref) > 255:
+            raise DomainValidationError("ref must be 1..255 characters")
+        if len(self.commit) not in (40, 64) or any(c not in "0123456789abcdef" for c in self.commit):
+            raise DomainValidationError("commit must be a full object ID")
+        if not self.paths or tuple(sorted(set(self.paths))) != self.paths or any(not p or PurePosixPath(p).is_absolute() or ".." in PurePosixPath(p).parts or str(PurePosixPath(p)) != p for p in self.paths):
+            raise DomainValidationError("paths must be unique sorted repository-relative paths")
 
 
 def promote_validated_work_record(record: WorkRecord, history: tuple[EpistemicEvent, ...], *, memory_id: MemoryId, promoted_by: AgentId, promoted_at: datetime) -> TeamMemory:

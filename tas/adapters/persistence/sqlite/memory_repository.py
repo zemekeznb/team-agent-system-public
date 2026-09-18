@@ -2,6 +2,7 @@
 
 import sqlite3
 import re
+import json
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,7 @@ from tas.domain.collaboration import TaskId
 from tas.domain.epistemic import EpistemicEventId
 from tas.domain.evidence import EvidenceId
 from tas.domain.identity import AgentId
-from tas.domain.memory import ApplicabilityStatus, MemoryId, MemorySearchQuery, MemoryValidationStatus, TeamMemory
+from tas.domain.memory import ApplicabilityStatus, MemoryCodeScope, MemoryId, MemorySearchQuery, MemoryValidationStatus, TeamMemory
 from tas.domain.ports import MemoryPersistenceError
 from tas.domain.work_record import WorkRecordId, WorkRecordType
 
@@ -62,8 +63,8 @@ class SQLiteMemoryRepository:
 
     def search(self, query: MemorySearchQuery) -> tuple[TeamMemory, ...]:
         match = " AND ".join(f'"{token}"' for token in re.findall(r"\w+", query.text, flags=re.UNICODE))
-        clauses = ["p.team_id=?", "m.task_id=t.id", "t.project_id=?"]
-        values: list[object] = [match, query.team_id.value, query.project_id.value]
+        clauses = ["p.team_id=?", "m.task_id=t.id", "t.project_id=?", "s.repository=?"]
+        values: list[object] = [match, query.team_id.value, query.project_id.value, query.repository]
         if query.validation_status is not None:
             clauses.append("m.validation_status=?")
             values.append(query.validation_status.value)
@@ -76,9 +77,31 @@ class SQLiteMemoryRepository:
             "JOIN tas_team_memories m ON m.rowid=f.rowid "
             "JOIN tas_tasks t ON t.id=m.task_id "
             "JOIN tas_projects p ON p.id=t.project_id "
+            "JOIN tas_team_memory_code_scopes s ON s.memory_id=m.id "
             "WHERE tas_team_memories_fts MATCH ? AND " + " AND ".join(clauses) +
             " ORDER BY bm25(tas_team_memories_fts),m.promoted_at,m.id LIMIT ?"
         )
         with closing(self._connect()) as connection:
             ids = [MemoryId(str(row[0])) for row in connection.execute(sql, values)]
         return tuple(item for identifier in ids if (item := self.get(identifier)) is not None)
+
+    def add_code_scope(self, scope: MemoryCodeScope) -> None:
+        with closing(self._connect()) as connection, connection:
+            row=connection.execute("SELECT m.task_id,e.payload_json FROM tas_team_memories m JOIN tas_observed_evidence e ON e.id=? WHERE m.id=? AND EXISTS(SELECT 1 FROM tas_team_memory_evidence l WHERE l.memory_id=m.id AND l.evidence_id=e.id)",(scope.source_evidence_id.value,scope.memory_id.value)).fetchone()
+            if row is None: raise MemoryPersistenceError("scope Evidence is not cited by Memory")
+            project=connection.execute("SELECT project_id FROM tas_tasks WHERE id=?",(str(row[0]),)).fetchone()
+            binding=connection.execute("SELECT project_id FROM tas_repository_bindings WHERE repository=?",(scope.repository,)).fetchone()
+            payload=json.loads(str(row[1]))
+            expected=(payload.get("repository"),payload.get("branch"),payload.get("head_commit"),tuple(sorted(item.get("path") for item in payload.get("files",[]))))
+            if binding is None or project is None or binding[0] != project[0] or expected != (scope.repository,scope.ref,scope.commit,scope.paths): raise MemoryPersistenceError("code scope does not match Git Evidence and Project binding")
+            try:
+                connection.execute("INSERT INTO tas_team_memory_code_scopes VALUES (?,?,?,?,?)",(scope.memory_id.value,scope.source_evidence_id.value,scope.repository,scope.ref,scope.commit))
+                connection.executemany("INSERT INTO tas_team_memory_code_paths VALUES (?,?,?)",[(scope.memory_id.value,i,p) for i,p in enumerate(scope.paths,1)])
+            except sqlite3.IntegrityError as error: raise MemoryPersistenceError("code scope could not be appended") from error
+
+    def get_code_scope(self, memory_id: MemoryId) -> MemoryCodeScope | None:
+        with closing(self._connect()) as connection:
+            row=connection.execute("SELECT source_evidence_id,repository,ref,commit_id FROM tas_team_memory_code_scopes WHERE memory_id=?",(memory_id.value,)).fetchone()
+            if row is None:return None
+            paths=tuple(str(p[0]) for p in connection.execute("SELECT path FROM tas_team_memory_code_paths WHERE memory_id=? ORDER BY sequence",(memory_id.value,)))
+        return MemoryCodeScope(memory_id,EvidenceId(str(row[0])),str(row[1]),str(row[2]),str(row[3]),paths)
