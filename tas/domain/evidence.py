@@ -135,6 +135,7 @@ class CommandOutcome(StrEnum):
     FUNCTIONAL_FAILURE = "functional_failure"
     PERFORMANCE_FAILURE = "performance_failure"
     ENVIRONMENT_JITTER = "environment_jitter"
+    EXTERNAL_DEPENDENCY_ERROR = "external_dependency_error"
     INFRASTRUCTURE_ERROR = "infrastructure_error"
     TIMED_OUT = "timed_out"
 

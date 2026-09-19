@@ -20,7 +20,7 @@ TEST_SUCCESS_RULE_ID = "command_test_success_v1"
 CODE_ADAPTATION_RULE_ID = "api_client_adaptation_v1"
 _CLAIM_KEYS = {"evidenceIds", "expectedOutcome", "kind", "schemaVersion"}
 _ADAPTATION_CLAIM_KEYS = {
-    "gitEvidenceId", "kind", "repository", "schemaVersion", "testEvidenceId"
+    "gitEvidenceId", "kind", "repository", "schemaVersion", "testEvidenceIds"
 }
 
 
@@ -108,12 +108,16 @@ def assess_test_success_claim(
 
 
 def build_code_adaptation_claim(
-    *, git_evidence_id: EvidenceId, test_evidence_id: EvidenceId, repository: str
+    *, git_evidence_id: EvidenceId, test_evidence_ids: tuple[EvidenceId, ...], repository: str
 ) -> str:
-    if not isinstance(git_evidence_id, EvidenceId) or not isinstance(test_evidence_id, EvidenceId):
+    if not isinstance(git_evidence_id, EvidenceId):
         raise TypeError("Evidence IDs must use EvidenceId")
-    if git_evidence_id == test_evidence_id:
-        raise DomainValidationError("Git and test Evidence must be distinct")
+    if (not isinstance(test_evidence_ids, tuple) or not 1 <= len(test_evidence_ids) <= 2
+            or not all(isinstance(item, EvidenceId) for item in test_evidence_ids)):
+        raise DomainValidationError("one or two test Evidence attempts are required")
+    all_ids = (git_evidence_id, *test_evidence_ids)
+    if len(set(all_ids)) != len(all_ids):
+        raise DomainValidationError("Git and test Evidence IDs must be distinct")
     if not isinstance(repository, str) or not repository.strip() or len(repository) > 255:
         raise DomainValidationError("repository must be 1..255 characters")
     return json.dumps({
@@ -121,7 +125,7 @@ def build_code_adaptation_claim(
         "kind": "code_adaptation_result",
         "repository": repository,
         "schemaVersion": 1,
-        "testEvidenceId": test_evidence_id.value,
+        "testEvidenceIds": [item.value for item in test_evidence_ids],
     }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -148,22 +152,45 @@ def assess_code_adaptation_claim(
             or len(claim["repository"]) > 255):
         raise DomainValidationError("code adaptation repository is invalid")
     git_id = EvidenceId(claim["gitEvidenceId"])
-    test_id = EvidenceId(claim["testEvidenceId"])
+    raw_test_ids = claim["testEvidenceIds"]
+    if (not isinstance(raw_test_ids, list) or not 1 <= len(raw_test_ids) <= 2
+            or any(not isinstance(item, str) for item in raw_test_ids)):
+        raise DomainValidationError("code adaptation test Evidence IDs are invalid")
+    test_ids = tuple(EvidenceId(item) for item in raw_test_ids)
+    if len(set(test_ids)) != len(test_ids) or git_id in test_ids:
+        raise DomainValidationError("code adaptation Evidence IDs must be distinct")
     observed = {item.id: item for item in record.observed}
-    if set(observed) != {git_id, test_id}:
-        raise DomainValidationError("code adaptation claim must cite exactly its Git and test Evidence")
+    if set(observed) != {git_id, *test_ids}:
+        raise DomainValidationError("code adaptation claim must cite exactly its Git and test Evidence attempts")
     git = observed[git_id]
-    test = observed[test_id]
-    if git.kind is not ObservedEvidenceKind.GIT or test.kind is not ObservedEvidenceKind.COMMAND_TEST:
+    tests = tuple(observed[item] for item in test_ids)
+    if (git.kind is not ObservedEvidenceKind.GIT
+            or any(item.kind is not ObservedEvidenceKind.COMMAND_TEST for item in tests)):
         raise DomainValidationError("code adaptation Evidence kinds are invalid")
     try:
         git_payload = json.loads(git.payload_json)
-        test_payload = json.loads(test.payload_json)
+        test_payloads = tuple(json.loads(item.payload_json) for item in tests)
+        test_payload = test_payloads[-1]
         files = git_payload["files"]
         command = test_payload["command"]
         raw_worktree = test_payload["worktree_root"]
         worktree = raw_worktree.replace("\\", "/").rstrip("/") if isinstance(raw_worktree, str) else ""
         command_script = command[1].replace("\\", "/") if isinstance(command, list) and len(command) > 1 and isinstance(command[1], str) else ""
+        chain_valid = all(
+            payload.get("attempt") == index
+            and (payload.get("retry_of") is None if index == 1 else payload.get("retry_of") == {"value": test_ids[index - 2].value})
+            and payload.get("repository") == claim["repository"]
+            and payload.get("commit") == git_payload["head_commit"]
+            and payload.get("command") == command
+            for index, payload in enumerate(test_payloads, 1)
+        )
+        prior_failures_valid = all(
+            type(payload.get("exit_code")) is int
+            and payload.get("exit_code") != 0
+            and payload.get("outcome") == "external_dependency_error"
+            and payload.get("outcome_basis") == "caller_asserted"
+            for payload in test_payloads[:-1]
+        )
         passed = (
             git_payload["repository"] == claim["repository"]
             and test_payload["repository"] == claim["repository"]
@@ -188,6 +215,8 @@ def assess_code_adaptation_claim(
             and isinstance(command[2], str)
             and command[2].startswith("http://127.0.0.1:")
             and command[3] == "user-001"
+            and chain_valid
+            and prior_failures_valid
             and type(test_payload["exit_code"]) is int
             and test_payload["exit_code"] == 0
             and test_payload["outcome"] == "passed"
@@ -198,7 +227,7 @@ def assess_code_adaptation_claim(
     return decide_epistemic_event(
         record, history, event_id=event_id,
         verdict=ValidationVerdict.VALIDATE if passed else ValidationVerdict.CONFLICT,
-        rule_id=CODE_ADAPTATION_RULE_ID, evidence_ids=(git_id, test_id),
+        rule_id=CODE_ADAPTATION_RULE_ID, evidence_ids=(git_id, *test_ids),
         occurred_at=occurred_at,
     )
 

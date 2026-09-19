@@ -99,6 +99,7 @@ class TestEvidenceCollector:
             CommandOutcome.FUNCTIONAL_FAILURE,
             CommandOutcome.PERFORMANCE_FAILURE,
             CommandOutcome.ENVIRONMENT_JITTER,
+            CommandOutcome.EXTERNAL_DEPENDENCY_ERROR,
         }:
             raise TestEvidenceCollectionError("failure_outcome is not caller-selectable")
         if not isinstance(command, tuple) or not command:
