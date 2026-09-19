@@ -18,8 +18,8 @@ class UserContractVersion(StrEnum):
     V2 = "v2"
 
 
-# F2-062 will change this tracked default in a real commit after the v1 client exists.
-DEFAULT_USER_CONTRACT = UserContractVersion.V1
+# F2-062 tracked breaking change: the runnable default now publishes v2.
+DEFAULT_USER_CONTRACT = UserContractVersion.V2
 
 
 class UserResponseV1(BaseModel):
