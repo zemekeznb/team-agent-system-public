@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -22,10 +23,23 @@ from tas.domain.evidence import (
     TestSummary,
 )
 from tas.domain.identity import AgentId
+from tas.domain.idempotency import IdempotencyKey
 
 
 class TestEvidenceCollectionError(RuntimeError):
     """The command could not be observed within the configured boundary."""
+
+
+class EvidenceIdempotencyConflictError(TestEvidenceCollectionError):
+    """A key was reused for a different collection request."""
+
+
+class EvidenceRequestInProgressError(TestEvidenceCollectionError):
+    """A reserved request has no durable completed result yet."""
+
+
+class EvidenceReplayIntegrityError(TestEvidenceCollectionError):
+    """A completed result cannot be replayed with intact output artifacts."""
 
 
 _PYTEST_COUNT = re.compile(
@@ -94,6 +108,7 @@ class TestEvidenceCollector:
         retry_of: EvidenceId | None = None,
         failure_outcome: CommandOutcome = CommandOutcome.FUNCTIONAL_FAILURE,
         environment: dict[str, str] | None = None,
+        idempotency_key: IdempotencyKey | None = None,
     ) -> CommandEvidence:
         if failure_outcome not in {
             CommandOutcome.FUNCTIONAL_FAILURE,
@@ -121,6 +136,7 @@ class TestEvidenceCollector:
             or (attempt > 1 and not isinstance(retry_of, EvidenceId))
         ):
             raise TestEvidenceCollectionError("attempt and retry_of are inconsistent")
+        process_environment = self._environment(environment)
         try:
             root = Path(workspace).resolve(strict=True)
         except (OSError, TypeError) as error:
@@ -129,6 +145,21 @@ class TestEvidenceCollector:
         if root != actual_root:
             raise TestEvidenceCollectionError("workspace must be the exact Git worktree root")
         commit = self._git(root, "rev-parse", "--verify", "HEAD^{commit}")
+
+        request_path: Path | None = None
+        fingerprint: str | None = None
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, IdempotencyKey):
+                raise TestEvidenceCollectionError("idempotency_key must use the domain type")
+            fingerprint = self._request_fingerprint(
+                root, repository, command, actor_id, task_id, commit, attempt,
+                retry_of, failure_outcome, environment,
+            )
+            request_path, replay = self._reserve_request(
+                actor_id, idempotency_key, fingerprint
+            )
+            if replay is not None:
+                return replay
 
         evidence_id = EvidenceId(str(uuid4()))
         started_at = datetime.now(UTC)
@@ -142,7 +173,7 @@ class TestEvidenceCollector:
             process = subprocess.Popen(
                 list(command),
                 cwd=root,
-                env=self._environment(environment),
+                env=process_environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -150,12 +181,14 @@ class TestEvidenceCollector:
             )
         except OSError:
             finished_at = datetime.now(UTC)
-            return self._evidence(
+            evidence = self._evidence(
                 evidence_id, actor_id, task_id, repository, root, commit, command,
                 attempt, retry_of, started_at, finished_at,
                 max(0, round((time.monotonic() - started_monotonic) * 1000)), None,
                 CommandOutcome.INFRASTRUCTURE_ERROR, "collector_error", stdout, stderr,
             )
+            self._complete_request(request_path, fingerprint, evidence)
+            return evidence
         assert process.stdout is not None and process.stderr is not None
         readers = [
             threading.Thread(target=stdout.consume, args=(process.stdout,), daemon=True),
@@ -203,11 +236,174 @@ class TestEvidenceCollector:
         else:
             outcome = failure_outcome
             outcome_basis = "caller_asserted"
-        return self._evidence(
+        evidence = self._evidence(
             evidence_id, actor_id, task_id, repository, root, commit, command,
             attempt, retry_of, started_at, finished_at, duration_ms, exit_code,
             outcome, outcome_basis, stdout, stderr,
         )
+        self._complete_request(request_path, fingerprint, evidence)
+        return evidence
+
+    def _reserve_request(
+        self, actor_id: AgentId, key: IdempotencyKey, fingerprint: str
+    ) -> tuple[Path, CommandEvidence | None]:
+        directory = self.artifact_root / ".requests"
+        directory.mkdir(parents=False, exist_ok=True)
+        if directory.is_symlink():
+            raise EvidenceReplayIntegrityError("evidence request ledger directory is unsafe")
+        identity = hashlib.sha256(
+            f"{actor_id.value}\0{key.value}".encode("utf-8")
+        ).hexdigest()
+        path = directory / f"{identity}.json"
+        reservation = json.dumps(
+            {"schemaVersion": 1, "status": "in_progress", "fingerprint": fingerprint},
+            sort_keys=True,
+        ).encode("utf-8")
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            record = self._read_request(path)
+            if record.get("fingerprint") != fingerprint:
+                raise EvidenceIdempotencyConflictError(
+                    "idempotency key was already used for a different request"
+                )
+            if record.get("status") == "in_progress":
+                raise EvidenceRequestInProgressError(
+                    "evidence request is in progress or its result is unknown"
+                )
+            if record.get("status") != "completed" or not isinstance(record.get("evidence"), dict):
+                raise EvidenceReplayIntegrityError("evidence request ledger is invalid")
+            evidence = self._deserialize_evidence(record["evidence"])
+            self._verify_artifact(evidence.stdout)
+            self._verify_artifact(evidence.stderr)
+            return path, evidence
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(reservation)
+            stream.flush()
+            os.fsync(stream.fileno())
+        return path, None
+
+    def _complete_request(
+        self, path: Path | None, fingerprint: str | None, evidence: CommandEvidence
+    ) -> None:
+        if path is None or fingerprint is None:
+            return
+        temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+        payload = {
+            "schemaVersion": 1,
+            "status": "completed",
+            "fingerprint": fingerprint,
+            "evidence": self._serialize_evidence(evidence),
+        }
+        try:
+            with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+                json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _read_request(self, path: Path) -> dict[str, object]:
+        try:
+            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                raise EvidenceReplayIntegrityError("evidence request ledger is unsafe")
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise EvidenceReplayIntegrityError("evidence request ledger cannot be read") from error
+        if (
+            not isinstance(value, dict)
+            or type(value.get("schemaVersion")) is not int
+            or value.get("schemaVersion") != 1
+        ):
+            raise EvidenceReplayIntegrityError("evidence request ledger is invalid")
+        return value
+
+    def _verify_artifact(self, artifact: OutputArtifact) -> None:
+        path = self.artifact_root / Path(artifact.reference)
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise EvidenceReplayIntegrityError("replayed output artifact is missing or unsafe")
+            content = path.read_bytes()
+        except OSError as error:
+            raise EvidenceReplayIntegrityError("replayed output artifact cannot be read") from error
+        if len(content) != artifact.captured_size or hashlib.sha256(content).hexdigest() != artifact.sha256:
+            raise EvidenceReplayIntegrityError("replayed output artifact failed integrity verification")
+
+    @staticmethod
+    def _request_fingerprint(
+        root: Path, repository: str, command: tuple[str, ...], actor_id: AgentId,
+        task_id: TaskId, commit: str, attempt: int, retry_of: EvidenceId | None,
+        failure_outcome: CommandOutcome, environment: dict[str, str] | None,
+    ) -> str:
+        payload = {
+            "workspace": str(root), "repository": repository, "command": command,
+            "actorId": actor_id.value, "taskId": task_id.value, "commit": commit,
+            "attempt": attempt, "retryOf": None if retry_of is None else retry_of.value,
+            "failureOutcome": failure_outcome.value,
+            "environmentSha256": hashlib.sha256(json.dumps(
+                sorted((environment or {}).items()), ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")).hexdigest(),
+        }
+        return hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _serialize_evidence(evidence: CommandEvidence) -> dict[str, object]:
+        def artifact(value: OutputArtifact) -> dict[str, object]:
+            return {"reference": value.reference, "sha256": value.sha256,
+                    "capturedSize": value.captured_size, "observedSize": value.observed_size,
+                    "truncated": value.truncated}
+        summary = None if evidence.summary is None else {
+            "framework": evidence.summary.framework, "passed": evidence.summary.passed,
+            "failed": evidence.summary.failed, "skipped": evidence.summary.skipped,
+            "errors": evidence.summary.errors,
+        }
+        return {
+            "id": evidence.id.value, "actorId": evidence.actor_id.value,
+            "taskId": evidence.task_id.value, "repository": evidence.repository,
+            "worktreeRoot": evidence.worktree_root, "commit": evidence.commit,
+            "command": list(evidence.command), "attempt": evidence.attempt,
+            "retryOf": None if evidence.retry_of is None else evidence.retry_of.value,
+            "startedAt": evidence.started_at.isoformat(),
+            "finishedAt": evidence.finished_at.isoformat(), "durationMs": evidence.duration_ms,
+            "exitCode": evidence.exit_code, "outcome": evidence.outcome.value,
+            "outcomeBasis": evidence.outcome_basis, "stdout": artifact(evidence.stdout),
+            "stderr": artifact(evidence.stderr), "summary": summary,
+        }
+
+    @staticmethod
+    def _deserialize_evidence(value: dict[str, object]) -> CommandEvidence:
+        try:
+            def artifact(name: str) -> OutputArtifact:
+                item = value[name]
+                if not isinstance(item, dict):
+                    raise TypeError
+                return OutputArtifact(str(item["reference"]), str(item["sha256"]),
+                                      item["capturedSize"], item["observedSize"], item["truncated"])
+            summary_value = value["summary"]
+            summary = None
+            if isinstance(summary_value, dict):
+                summary = TestSummary(str(summary_value["framework"]), summary_value["passed"],
+                                      summary_value["failed"], summary_value["skipped"],
+                                      summary_value["errors"])
+            retry = value["retryOf"]
+            return CommandEvidence(
+                EvidenceId(str(value["id"])), AgentId(str(value["actorId"])),
+                TaskId(str(value["taskId"])), str(value["repository"]),
+                str(value["worktreeRoot"]), str(value["commit"]),
+                tuple(value["command"]), value["attempt"],
+                None if retry is None else EvidenceId(str(retry)),
+                datetime.fromisoformat(str(value["startedAt"])),
+                datetime.fromisoformat(str(value["finishedAt"])), value["durationMs"],
+                value["exitCode"], CommandOutcome(str(value["outcome"])),
+                str(value["outcomeBasis"]), artifact("stdout"), artifact("stderr"), summary,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise EvidenceReplayIntegrityError("completed evidence result is invalid") from error
 
     def _evidence(
         self, evidence_id: EvidenceId, actor_id: AgentId, task_id: TaskId,
