@@ -11,7 +11,7 @@ from tas.domain.collaboration import TaskId
 from tas.domain.epistemic import EpistemicEventId
 from tas.domain.evidence import EvidenceId
 from tas.domain.identity import AgentId
-from tas.domain.memory import ApplicabilityReason, ApplicabilityStatus, MemoryApplicabilityAssessment, MemoryCodeScope, MemoryId, MemorySearchQuery, MemoryValidationStatus, TeamMemory
+from tas.domain.memory import ApplicabilityReason, ApplicabilityStatus, MemoryApplicabilityAssessment, MemoryCodeScope, MemoryId, MemoryRevision, MemorySearchQuery, MemoryValidationStatus, TeamMemory
 from tas.domain.ports import MemoryPersistenceError
 from tas.domain.work_record import WorkRecordId, WorkRecordType
 
@@ -59,8 +59,9 @@ class SQLiteMemoryRepository:
     def get(self, memory_id: MemoryId) -> TeamMemory | None:
         with closing(self._connect()) as connection:
             row=connection.execute(
-                "SELECT m.*,COALESCE((SELECT a.status FROM tas_memory_applicability_assessments a "
-                "WHERE a.memory_id=m.id ORDER BY a.sequence DESC LIMIT 1),m.applicability_status) "
+                "SELECT m.*,CASE WHEN EXISTS(SELECT 1 FROM tas_memory_revisions r WHERE r.superseded_memory_id=m.id) "
+                "THEN 'superseded' ELSE COALESCE((SELECT a.status FROM tas_memory_applicability_assessments a "
+                "WHERE a.memory_id=m.id ORDER BY a.sequence DESC LIMIT 1),m.applicability_status) END "
                 "FROM tas_team_memories m WHERE m.id=?",(memory_id.value,)
             ).fetchone()
             if row is None: return None
@@ -75,7 +76,7 @@ class SQLiteMemoryRepository:
             clauses.append("m.validation_status=?")
             values.append(query.validation_status.value)
         if query.applicability_status is not None:
-            clauses.append("COALESCE(a.status,m.applicability_status)=?")
+            clauses.append("CASE WHEN r.id IS NOT NULL THEN 'superseded' ELSE COALESCE(a.status,m.applicability_status) END=?")
             values.append(query.applicability_status.value)
         values.append(query.limit)
         sql = (
@@ -85,6 +86,7 @@ class SQLiteMemoryRepository:
             "JOIN tas_projects p ON p.id=t.project_id "
             "JOIN tas_team_memory_code_scopes s ON s.memory_id=m.id "
             "LEFT JOIN tas_memory_applicability_assessments a ON a.memory_id=m.id AND a.sequence=(SELECT MAX(a2.sequence) FROM tas_memory_applicability_assessments a2 WHERE a2.memory_id=m.id) "
+            "LEFT JOIN tas_memory_revisions r ON r.superseded_memory_id=m.id "
             "WHERE tas_team_memories_fts MATCH ? AND " + " AND ".join(clauses) +
             " ORDER BY bm25(tas_team_memories_fts),m.promoted_at,m.id LIMIT ?"
         )
@@ -124,6 +126,8 @@ class SQLiteMemoryRepository:
                 ).fetchone()
                 if scope is None or str(scope[0]) != assessment.memory_commit:
                     raise MemoryPersistenceError("assessment does not match Memory code scope")
+                if connection.execute("SELECT 1 FROM tas_memory_revisions WHERE superseded_memory_id=?",(assessment.memory_id.value,)).fetchone() is not None:
+                    raise MemoryPersistenceError("superseded Memory cannot receive new applicability assessments")
                 latest = connection.execute(
                     "SELECT id,sequence,checked_at FROM tas_memory_applicability_assessments "
                     "WHERE memory_id=? ORDER BY sequence DESC LIMIT 1",
@@ -165,3 +169,85 @@ class SQLiteMemoryRepository:
                 (str(row[0]),),
             ))
         return MemoryApplicabilityAssessment(str(row[0]),memory_id,int(row[1]),None if row[2] is None else str(row[2]),ApplicabilityStatus(str(row[3])),ApplicabilityReason(str(row[4])),str(row[5]),None if row[6] is None else str(row[6]),paths,datetime.fromisoformat(str(row[7])))
+
+    def add_revision(self, revision: MemoryRevision) -> None:
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                rows = connection.execute(
+                    "SELECT m.id,t.project_id,p.team_id,m.promoted_by_agent_id,m.promoted_at,s.repository,s.ref,s.commit_id,"
+                    "m.source_validation_event_id,(SELECT e.id FROM tas_epistemic_events e WHERE e.work_record_id=m.source_work_record_id ORDER BY e.sequence DESC LIMIT 1),"
+                    "(SELECT e.to_status FROM tas_epistemic_events e WHERE e.work_record_id=m.source_work_record_id ORDER BY e.sequence DESC LIMIT 1) "
+                    "FROM tas_team_memories m JOIN tas_tasks t ON t.id=m.task_id JOIN tas_projects p ON p.id=t.project_id "
+                    "JOIN tas_team_memory_code_scopes s ON s.memory_id=m.id WHERE m.id IN (?,?)",
+                    (revision.superseded_memory_id.value,revision.replacement_memory_id.value),
+                ).fetchall()
+                values = {str(row[0]): row for row in rows}
+                old = values.get(revision.superseded_memory_id.value); new = values.get(revision.replacement_memory_id.value)
+                if old is None or new is None:
+                    raise MemoryPersistenceError("revision endpoints require code-scoped Memories")
+                if old[1:3] != new[1:3] or old[5:7] != new[5:7]:
+                    raise MemoryPersistenceError("revision endpoints must share Team, Project, Repository, and Ref")
+                if any(str(item[8]) != str(item[9]) or str(item[10]) != "validated" for item in (old,new)):
+                    raise MemoryPersistenceError("revision endpoints must remain validated at decision time")
+                if str(new[3]) != revision.actor_id.value:
+                    raise MemoryPersistenceError("revision actor must be the replacement promoter")
+                if str(old[7]) == str(new[7]):
+                    raise MemoryPersistenceError("replacement must use a different code commit")
+                old_paths = {str(row[0]) for row in connection.execute("SELECT path FROM tas_team_memory_code_paths WHERE memory_id=?",(revision.superseded_memory_id.value,))}
+                new_paths = {str(row[0]) for row in connection.execute("SELECT path FROM tas_team_memory_code_paths WHERE memory_id=?",(revision.replacement_memory_id.value,))}
+                if not old_paths.intersection(new_paths):
+                    raise MemoryPersistenceError("revision code scopes must overlap")
+                old_status = self._latest_status(connection, revision.superseded_memory_id.value)
+                new_status = self._latest_status(connection, revision.replacement_memory_id.value)
+                if old_status != ApplicabilityStatus.POSSIBLY_STALE.value:
+                    raise MemoryPersistenceError("only a possibly stale Memory can be superseded in F2")
+                if new_status not in (ApplicabilityStatus.EXACT.value,ApplicabilityStatus.COMPATIBLE.value):
+                    raise MemoryPersistenceError("replacement Memory must have current applicability")
+                old_current = self._latest_current_commit(connection, revision.superseded_memory_id.value)
+                new_current = self._latest_current_commit(connection, revision.replacement_memory_id.value)
+                if old_current is None or old_current != new_current:
+                    raise MemoryPersistenceError("revision endpoints must be assessed against the same current commit")
+                if connection.execute("SELECT 1 FROM tas_memory_revisions WHERE superseded_memory_id=?",(revision.replacement_memory_id.value,)).fetchone() is not None:
+                    raise MemoryPersistenceError("replacement Memory is already superseded")
+                if revision.occurred_at < max(datetime.fromisoformat(str(old[4])),datetime.fromisoformat(str(new[4]))):
+                    raise MemoryPersistenceError("revision cannot predate its Memories")
+                if connection.execute(
+                    "WITH RECURSIVE chain(id) AS (SELECT ? UNION ALL SELECT r.replacement_memory_id FROM tas_memory_revisions r JOIN chain c ON r.superseded_memory_id=c.id) SELECT 1 FROM chain WHERE id=? LIMIT 1",
+                    (revision.replacement_memory_id.value,revision.superseded_memory_id.value),
+                ).fetchone() is not None:
+                    raise MemoryPersistenceError("Memory revision would create a cycle")
+                connection.execute("INSERT INTO tas_memory_revisions VALUES (?,?,?,?,?,?)",(
+                    revision.id,revision.superseded_memory_id.value,revision.replacement_memory_id.value,
+                    revision.actor_id.value,revision.reason,revision.occurred_at.isoformat(),
+                ))
+                connection.execute("COMMIT")
+            except MemoryPersistenceError:
+                connection.execute("ROLLBACK"); raise
+            except sqlite3.IntegrityError as error:
+                connection.execute("ROLLBACK"); raise MemoryPersistenceError("Memory revision could not be appended") from error
+
+    @staticmethod
+    def _latest_status(connection: sqlite3.Connection, memory_id: str) -> str:
+        row = connection.execute(
+            "SELECT status FROM tas_memory_applicability_assessments WHERE memory_id=? ORDER BY sequence DESC LIMIT 1",
+            (memory_id,),
+        ).fetchone()
+        return ApplicabilityStatus.UNKNOWN.value if row is None else str(row[0])
+
+    @staticmethod
+    def _latest_current_commit(connection: sqlite3.Connection, memory_id: str) -> str | None:
+        row = connection.execute(
+            "SELECT current_commit FROM tas_memory_applicability_assessments WHERE memory_id=? ORDER BY sequence DESC LIMIT 1",
+            (memory_id,),
+        ).fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+
+    def get_revision(self, superseded_memory_id: MemoryId) -> MemoryRevision | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT id,replacement_memory_id,actor_agent_id,reason,occurred_at FROM tas_memory_revisions WHERE superseded_memory_id=?",
+                (superseded_memory_id.value,),
+            ).fetchone()
+        if row is None: return None
+        return MemoryRevision(str(row[0]),superseded_memory_id,MemoryId(str(row[1])),AgentId(str(row[2])),str(row[3]),datetime.fromisoformat(str(row[4])))

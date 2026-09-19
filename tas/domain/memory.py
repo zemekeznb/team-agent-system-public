@@ -193,6 +193,30 @@ class MemoryApplicabilityAssessment:
             raise DomainValidationError("checked_at must use UTC")
 
 
+@dataclass(frozen=True, slots=True)
+class MemoryRevision:
+    id: str
+    superseded_memory_id: MemoryId
+    replacement_memory_id: MemoryId
+    actor_id: AgentId
+    reason: str
+    occurred_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id.strip() or len(self.id) > 255:
+            raise DomainValidationError("revision id must be 1..255 characters")
+        if not isinstance(self.superseded_memory_id, MemoryId) or not isinstance(self.replacement_memory_id, MemoryId):
+            raise TypeError("revision endpoints must use MemoryId")
+        if self.superseded_memory_id == self.replacement_memory_id:
+            raise DomainValidationError("Memory cannot supersede itself")
+        if not isinstance(self.actor_id, AgentId):
+            raise TypeError("actor_id must use AgentId")
+        if not isinstance(self.reason, str) or not self.reason.strip() or len(self.reason) > 1024:
+            raise DomainValidationError("revision reason must be 1..1024 characters")
+        if not isinstance(self.occurred_at, datetime) or self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() != timedelta(0):
+            raise DomainValidationError("occurred_at must use UTC")
+
+
 def promote_validated_work_record(record: WorkRecord, history: tuple[EpistemicEvent, ...], *, memory_id: MemoryId, promoted_by: AgentId, promoted_at: datetime) -> TeamMemory:
     if not history or history[-1].work_record_id != record.id or history[-1].to_status is not EpistemicStatus.VALIDATED:
         raise DomainValidationError("only a currently validated Work Record can be promoted")
