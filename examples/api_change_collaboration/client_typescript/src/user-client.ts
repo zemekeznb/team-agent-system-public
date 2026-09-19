@@ -1,6 +1,6 @@
-export interface UserResponseV1 {
+export interface UserResponseV2 {
   userId: string;
-  userName: string;
+  name: string;
 }
 
 export interface UserApiClientOptions {
@@ -26,7 +26,7 @@ export class UserApiClient {
     );
   }
 
-  async getUser(userId: string): Promise<UserResponseV1> {
+  async getUser(userId: string): Promise<UserResponseV2> {
     if (!/^[A-Za-z0-9-]{1,64}$/.test(userId)) {
       throw new TypeError("userId must contain 1..64 ASCII letters, digits, or hyphens");
     }
@@ -58,8 +58,8 @@ export class UserApiClient {
     } catch (error) {
       throw new TypeError("User API response is not valid JSON", { cause: error });
     }
-    if (!isUserResponseV1(body, userId)) {
-      throw new TypeError("User API response does not match the v1 contract");
+    if (!isUserResponseV2(body, userId)) {
+      throw new TypeError("User API response does not match the v2 contract");
     }
     return body;
   }
@@ -120,16 +120,16 @@ async function readLimitedUtf8(response: Response, limit: number): Promise<strin
   }
 }
 
-function isUserResponseV1(value: unknown, requestedUserId: string): value is UserResponseV1 {
+function isUserResponseV2(value: unknown, requestedUserId: string): value is UserResponseV2 {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }
   const record = value as Record<string, unknown>;
   return (
-    Object.keys(record).sort().join(",") === "userId,userName" &&
+    Object.keys(record).sort().join(",") === "name,userId" &&
     record.userId === requestedUserId &&
-    typeof record.userName === "string" &&
-    record.userName.length >= 1 &&
-    record.userName.length <= 256
+    typeof record.name === "string" &&
+    record.name.length >= 1 &&
+    record.name.length <= 256
   );
 }

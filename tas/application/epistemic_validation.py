@@ -17,7 +17,11 @@ from tas.domain.work_record import ObservedEvidenceKind, WorkRecord, WorkRecordT
 
 
 TEST_SUCCESS_RULE_ID = "command_test_success_v1"
+CODE_ADAPTATION_RULE_ID = "api_client_adaptation_v1"
 _CLAIM_KEYS = {"evidenceIds", "expectedOutcome", "kind", "schemaVersion"}
+_ADAPTATION_CLAIM_KEYS = {
+    "gitEvidenceId", "kind", "repository", "schemaVersion", "testEvidenceId"
+}
 
 
 def build_test_success_claim(evidence_ids: tuple[EvidenceId, ...]) -> str:
@@ -99,6 +103,102 @@ def assess_test_success_claim(
         verdict=ValidationVerdict.VALIDATE if passed else ValidationVerdict.CONFLICT,
         rule_id=TEST_SUCCESS_RULE_ID,
         evidence_ids=evidence_ids,
+        occurred_at=occurred_at,
+    )
+
+
+def build_code_adaptation_claim(
+    *, git_evidence_id: EvidenceId, test_evidence_id: EvidenceId, repository: str
+) -> str:
+    if not isinstance(git_evidence_id, EvidenceId) or not isinstance(test_evidence_id, EvidenceId):
+        raise TypeError("Evidence IDs must use EvidenceId")
+    if git_evidence_id == test_evidence_id:
+        raise DomainValidationError("Git and test Evidence must be distinct")
+    if not isinstance(repository, str) or not repository.strip() or len(repository) > 255:
+        raise DomainValidationError("repository must be 1..255 characters")
+    return json.dumps({
+        "gitEvidenceId": git_evidence_id.value,
+        "kind": "code_adaptation_result",
+        "repository": repository,
+        "schemaVersion": 1,
+        "testEvidenceId": test_evidence_id.value,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def assess_code_adaptation_claim(
+    record: WorkRecord,
+    history: tuple[EpistemicEvent, ...],
+    *,
+    event_id: EpistemicEventId,
+    occurred_at: datetime,
+) -> EpistemicEvent:
+    """Validate that a committed Git adaptation is exactly the code tested."""
+    if record.record_type is not WorkRecordType.RESULT or record.claim_text is None:
+        raise DomainValidationError("code adaptation validation requires a result claim")
+    try:
+        claim = json.loads(record.claim_text)
+    except json.JSONDecodeError as error:
+        raise DomainValidationError("code adaptation claim must be valid JSON") from error
+    canonical = json.dumps(claim, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    if canonical != record.claim_text or not isinstance(claim, dict) or set(claim) != _ADAPTATION_CLAIM_KEYS:
+        raise DomainValidationError("code adaptation claim schema is invalid")
+    if type(claim["schemaVersion"]) is not int or claim["schemaVersion"] != 1 or claim["kind"] != "code_adaptation_result":
+        raise DomainValidationError("code adaptation claim semantics are unsupported")
+    if (not isinstance(claim["repository"], str) or not claim["repository"].strip()
+            or len(claim["repository"]) > 255):
+        raise DomainValidationError("code adaptation repository is invalid")
+    git_id = EvidenceId(claim["gitEvidenceId"])
+    test_id = EvidenceId(claim["testEvidenceId"])
+    observed = {item.id: item for item in record.observed}
+    if set(observed) != {git_id, test_id}:
+        raise DomainValidationError("code adaptation claim must cite exactly its Git and test Evidence")
+    git = observed[git_id]
+    test = observed[test_id]
+    if git.kind is not ObservedEvidenceKind.GIT or test.kind is not ObservedEvidenceKind.COMMAND_TEST:
+        raise DomainValidationError("code adaptation Evidence kinds are invalid")
+    try:
+        git_payload = json.loads(git.payload_json)
+        test_payload = json.loads(test.payload_json)
+        files = git_payload["files"]
+        command = test_payload["command"]
+        raw_worktree = test_payload["worktree_root"]
+        worktree = raw_worktree.replace("\\", "/").rstrip("/") if isinstance(raw_worktree, str) else ""
+        command_script = command[1].replace("\\", "/") if isinstance(command, list) and len(command) > 1 and isinstance(command[1], str) else ""
+        passed = (
+            git_payload["repository"] == claim["repository"]
+            and test_payload["repository"] == claim["repository"]
+            and test_payload["commit"] == git_payload["head_commit"]
+            and isinstance(files, list)
+            and any(
+                isinstance(item, dict)
+                and item.get("path") == "client_typescript/src/user-client.ts"
+                for item in files
+            )
+            and any(
+                isinstance(item, dict)
+                and item.get("path") == "client_typescript/dist/src/read-user-cli.js"
+                for item in files
+            )
+            and isinstance(command, list)
+            and len(command) == 4
+            and isinstance(command[0], str)
+            and command[0].lower().endswith(("node", "node.exe"))
+            and isinstance(command[1], str)
+            and command_script == worktree + "/client_typescript/dist/src/read-user-cli.js"
+            and isinstance(command[2], str)
+            and command[2].startswith("http://127.0.0.1:")
+            and command[3] == "user-001"
+            and type(test_payload["exit_code"]) is int
+            and test_payload["exit_code"] == 0
+            and test_payload["outcome"] == "passed"
+            and test_payload["outcome_basis"] == "exit_code"
+        )
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise DomainValidationError("code adaptation Evidence payload is incomplete") from error
+    return decide_epistemic_event(
+        record, history, event_id=event_id,
+        verdict=ValidationVerdict.VALIDATE if passed else ValidationVerdict.CONFLICT,
+        rule_id=CODE_ADAPTATION_RULE_ID, evidence_ids=(git_id, test_id),
         occurred_at=occurred_at,
     )
 
