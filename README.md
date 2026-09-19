@@ -8,7 +8,7 @@ It does not replace Codex, Claude Code, Cursor, or other agents, and it does not
 
 > **Requests may cross Owner boundaries. Execution authority, factual judgment, and responsibility must not travel with them.**
 
-**Current status: F2 / M6 technical validation. TAS is not an MVP or a production-ready service, and it has not yet completed end-to-end validation with two real independent Owners.**
+**Current status: F2 technical validation is complete with conditional results; F3 is not ready to start. TAS is not an MVP or a production-ready service, and it has not yet completed end-to-end validation with two real independent Owners.**
 
 ## How one collaboration should work
 
@@ -69,9 +69,10 @@ Whether an old conclusion remains useful depends on the Commit, paths, and envir
 | Task delivery and recovery | Validated in F2 | Inbox, Lease, Retry, ACK, process restart |
 | Policy, Approval, and Audit | Validated in F2 | Automated permission matrix and local fixtures |
 | Single-use authorization and execution reconciliation | Validated in F2 | Approval Grant, Action Receipt, execution-time checks |
-| Git and test Evidence | Validated in F2 | Controlled local Worktree and subprocess |
+| Git and test Evidence | Partially validated in F2 | Core capture works; path scope, trusted Worktree binding, freshness, and Secret redaction still have known gaps |
 | Claim / observed-fact separation | Validated in F2 | Append-only Work Records and Evidence snapshots |
 | Epistemic Status | Validated in F2 | Append-only history and one controlled adversarial test-result rule |
+| Natural-language epistemic extraction | Inconclusive | Conservative curated baseline only; no independent human-labelled accuracy result |
 | Team Memory and applicability-aware retrieval | Validated in F2 | Validated Work Record promotion, scoped retrieval, Git staleness, explicit supersession |
 | Two-real-Owner collaboration | Not run | Required in F3 |
 | Production deployment | Not implemented | No production-readiness claim |
@@ -80,8 +81,8 @@ Whether an old conclusion remains useful depends on the Commit, paths, and envir
 
 ## What comes next
 
-- **Build M6:** connect the validated components in a repeatable FastAPI + TypeScript technical integration scenario, including failure recovery.
-- **Enter F3:** run end-to-end collaboration with two real independent Owners, credentials, and Agent environments.
+- **Prepare for F3:** close the known Evidence trust gaps and build the remote service, two local Adapters, HTTPS, and non-fixture credential boundary.
+- **Enter F3 only when ready:** run end-to-end collaboration with two real independent Owners, credentials, and Agent environments after every entry condition is satisfied.
 - **Continue evolving:** build a controlled Agent directory, impact routing, approval experience, Evidence review, and applicability-aware Team Memory.
 
 Multiple sessions, Agents, Worktrees, or test fixtures belonging to one Owner are not substitutes for real multi-Owner validation.
@@ -114,7 +115,7 @@ Team Agent System（TAS）是一个协作与可信记忆中间件。
 
 > **请求可以跨越 Owner 边界，但执行权、事实判断和责任不能随请求一起传播。**
 
-**当前状态：F2 / M6 技术验证阶段。不是 MVP，不是生产可用服务，尚未由两位真实独立 Owner 完成端到端验证。**
+**当前状态：F2 技术验证已完成，但结论是有条件可行；F3 尚未具备启动条件。不是 MVP，不是生产可用服务，尚未由两位真实独立 Owner 完成端到端验证。**
 
 ## 一次协作如何发生
 
@@ -175,9 +176,10 @@ Agent 说“测试通过”，与 TAS 采集到“退出码 0、12 passed”是�
 | Task 投递与恢复 | F2 已验证 | Inbox、Lease、Retry、ACK、进程重启 |
 | Policy、Approval 与 Audit | F2 已验证 | 自动化权限矩阵和本地 Fixture |
 | 单次授权与执行对账 | F2 已验证 | Approval Grant、Action Receipt、执行前复核 |
-| Git/Test Evidence | F2 已验证 | 本机受控 Worktree 与 subprocess |
+| Git/Test Evidence | F2 部分验证 | 核心采集已成立；路径范围、可信 Worktree 绑定、时效性和 Secret redaction 仍有已知缺口 |
 | Claim 与 observed fact 分离 | F2 已验证 | append-only Work Record 与 Evidence snapshot |
 | Epistemic Status | F2 已验证 | append-only 历史与一条受控测试结果对抗规则 |
+| 自然语言认识状态抽取 | 结论不确定 | 只有保守的受控数据集基线，没有独立人工标注准确率 |
 | Team Memory 与适用性检索 | F2 已验证 | validated Work Record 提升、范围检索、Git 过期检测与显式替代 |
 | 两个真实 Owner 协作 | 尚未运行 | F3 强制验证项 |
 | 生产部署 | 尚未完成 | 不声称生产可用 |
@@ -186,8 +188,8 @@ Agent 说“测试通过”，与 TAS 采集到“退出码 0、12 passed”是�
 
 ## 接下来会发生什么
 
-- **推进 M6：** 在可重复的 FastAPI + TypeScript 技术集成场景中连接已验证组件，并覆盖失败恢复。
-- **进入 F3：** 由两位真实独立 Owner，使用独立身份、凭据和 Agent 环境完成端到端协作。
+- **准备 F3：** 修复已知 Evidence 信任缺口，建立远程服务、两端本地 Adapter、HTTPS 与非 Fixture Credential 边界。
+- **满足条件后再进入 F3：** 只有全部准入条件满足，才由两位真实独立 Owner 使用独立身份、凭据和 Agent 环境完成端到端协作。
 - **继续演进：** 推进受控 Agent 目录、影响路由、审批体验、Evidence 审查和带适用范围的 Team Memory。
 
 同一 Owner 的多个会话、Agent、Worktree 或测试 Fixture，都不能替代真实多 Owner 验证。
