@@ -33,7 +33,7 @@ from .idempotency import (
 )
 from .work_record import WorkRecord, WorkRecordId
 from .epistemic import EpistemicEvent
-from .memory import TeamMemory, MemoryCodeScope, MemoryId, MemorySearchQuery
+from .memory import TeamMemory, MemoryApplicabilityAssessment, MemoryCodeScope, MemoryId, MemorySearchQuery
 
 
 class IdentityPersistenceError(RuntimeError):
@@ -125,6 +125,8 @@ class MemoryRepository(Protocol):
     def search(self, query: MemorySearchQuery) -> tuple[TeamMemory, ...]: ...
     def add_code_scope(self, scope: MemoryCodeScope) -> None: ...
     def get_code_scope(self, memory_id: MemoryId) -> MemoryCodeScope | None: ...
+    def append_applicability(self, assessment: MemoryApplicabilityAssessment) -> None: ...
+    def latest_applicability(self, memory_id: MemoryId) -> MemoryApplicabilityAssessment | None: ...
 
 
 class ActionGrantRepository(Protocol):
