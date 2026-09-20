@@ -74,7 +74,7 @@ class TeamMemory:
         if not isinstance(self.content, str) or not self.content.strip() or len(self.content) > 65_536: raise DomainValidationError("content must be 1..65536 characters")
         if not isinstance(self.validation_rule_id, str) or not self.validation_rule_id.strip(): raise DomainValidationError("validation_rule_id is required")
         if not self.evidence_ids or len(set(self.evidence_ids)) != len(self.evidence_ids): raise DomainValidationError("unique validation Evidence is required")
-        if self.validation_status is not MemoryValidationStatus.VALIDATED: raise DomainValidationError("new Memory must be validated")
+        if not isinstance(self.validation_status, MemoryValidationStatus): raise TypeError("validation_status must use MemoryValidationStatus")
         if not isinstance(self.applicability_status, ApplicabilityStatus): raise TypeError("applicability_status must use ApplicabilityStatus")
         if self.promotion_rule_id != "validated_work_record_v1": raise DomainValidationError("promotion rule is unsupported")
         if not isinstance(self.promoted_at, datetime) or self.promoted_at.tzinfo is None or self.promoted_at.utcoffset() != timedelta(0): raise DomainValidationError("promoted_at must use UTC")

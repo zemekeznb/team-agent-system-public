@@ -25,6 +25,8 @@ class SQLiteMemoryRepository:
         return connection
 
     def add(self, memory: TeamMemory) -> None:
+        if memory.validation_status is not MemoryValidationStatus.VALIDATED:
+            raise MemoryPersistenceError("new Memory validation must be validated")
         if memory.applicability_status is not ApplicabilityStatus.UNKNOWN:
             raise MemoryPersistenceError("new Memory applicability must be unknown")
         with closing(self._connect()) as connection:
@@ -58,22 +60,27 @@ class SQLiteMemoryRepository:
 
     def get(self, memory_id: MemoryId) -> TeamMemory | None:
         with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
             row=connection.execute(
                 "SELECT m.*,CASE WHEN EXISTS(SELECT 1 FROM tas_memory_revisions r WHERE r.superseded_memory_id=m.id) "
                 "THEN 'superseded' ELSE COALESCE((SELECT a.status FROM tas_memory_applicability_assessments a "
-                "WHERE a.memory_id=m.id ORDER BY a.sequence DESC LIMIT 1),m.applicability_status) END "
+                "WHERE a.memory_id=m.id ORDER BY a.sequence DESC LIMIT 1),m.applicability_status) END,"
+                "CASE WHEN COALESCE((SELECT e.to_status FROM tas_epistemic_events e "
+                "WHERE e.work_record_id=m.source_work_record_id ORDER BY e.sequence DESC LIMIT 1),'missing')='validated' "
+                "THEN m.validation_status ELSE 'invalidated' END "
                 "FROM tas_team_memories m WHERE m.id=?",(memory_id.value,)
             ).fetchone()
             if row is None: return None
             evidence=tuple(EvidenceId(str(item[0])) for item in connection.execute("SELECT evidence_id FROM tas_team_memory_evidence WHERE memory_id=? ORDER BY sequence",(memory_id.value,)))
-        return TeamMemory(MemoryId(str(row[0])),WorkRecordId(str(row[1])),EpistemicEventId(str(row[2])),TaskId(str(row[3])),AgentId(str(row[4])),AgentId(str(row[5])),WorkRecordType(str(row[6])),str(row[7]),str(row[8]),evidence,MemoryValidationStatus(str(row[9])),ApplicabilityStatus(str(row[13])),str(row[11]),datetime.fromisoformat(str(row[12])))
+            connection.execute("COMMIT")
+        return TeamMemory(MemoryId(str(row[0])),WorkRecordId(str(row[1])),EpistemicEventId(str(row[2])),TaskId(str(row[3])),AgentId(str(row[4])),AgentId(str(row[5])),WorkRecordType(str(row[6])),str(row[7]),str(row[8]),evidence,MemoryValidationStatus(str(row[14])),ApplicabilityStatus(str(row[13])),str(row[11]),datetime.fromisoformat(str(row[12])))
 
     def search(self, query: MemorySearchQuery) -> tuple[TeamMemory, ...]:
         match = " AND ".join(f'"{token}"' for token in re.findall(r"\w+", query.text, flags=re.UNICODE))
         clauses = ["p.team_id=?", "m.task_id=t.id", "t.project_id=?", "s.repository=?"]
         values: list[object] = [match, query.team_id.value, query.project_id.value, query.repository]
         if query.validation_status is not None:
-            clauses.append("m.validation_status=?")
+            clauses.append("CASE WHEN COALESCE((SELECT e.to_status FROM tas_epistemic_events e WHERE e.work_record_id=m.source_work_record_id ORDER BY e.sequence DESC LIMIT 1),'missing')='validated' THEN m.validation_status ELSE 'invalidated' END=?")
             values.append(query.validation_status.value)
         if query.applicability_status is not None:
             clauses.append("CASE WHEN r.id IS NOT NULL THEN 'superseded' ELSE COALESCE(a.status,m.applicability_status) END=?")
@@ -92,7 +99,14 @@ class SQLiteMemoryRepository:
         )
         with closing(self._connect()) as connection:
             ids = [MemoryId(str(row[0])) for row in connection.execute(sql, values)]
-        return tuple(item for identifier in ids if (item := self.get(identifier)) is not None)
+        restored = tuple(
+            item for identifier in ids if (item := self.get(identifier)) is not None
+        )
+        return tuple(
+            item for item in restored
+            if (query.validation_status is None or item.validation_status is query.validation_status)
+            and (query.applicability_status is None or item.applicability_status is query.applicability_status)
+        )
 
     def add_code_scope(self, scope: MemoryCodeScope) -> None:
         with closing(self._connect()) as connection, connection:
