@@ -79,15 +79,19 @@ class SQLiteInboxRepository:
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._reap_expired(connection, now)
+            active = connection.execute(
+                "SELECT 1 FROM tas_inbox_items WHERE recipient_agent_id = ? AND status = 'leased' AND lease_expires_at > ? LIMIT 1",
+                (recipient.value, now.isoformat()),
+            ).fetchone()
+            if active is not None:
+                connection.execute("COMMIT")
+                raise InboxConflictError("recipient has an actively leased InboxItem")
             row = connection.execute(
                 "SELECT id FROM tas_inbox_items WHERE recipient_agent_id = ? AND attempt_count < max_attempts AND ((status = 'pending' AND available_at <= ?) OR (status = 'leased' AND lease_expires_at <= ?)) ORDER BY available_at, id LIMIT 1",
                 (recipient.value, now.isoformat(), now.isoformat()),
             ).fetchone()
             if row is None:
-                active = connection.execute("SELECT 1 FROM tas_inbox_items WHERE recipient_agent_id = ? AND status = 'leased' AND lease_expires_at > ? LIMIT 1", (recipient.value, now.isoformat())).fetchone()
                 connection.execute("COMMIT")
-                if active is not None:
-                    raise InboxConflictError("recipient has an actively leased InboxItem")
                 return None
             expires = now + duration
             token = LeaseToken(secrets.token_urlsafe(32))
