@@ -20,6 +20,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
+from tas.contracts import F3_APPLICATION_API_VERSION
+
 from tas.application.credentials import (
     CredentialService,
     InsufficientCredentialScopeError,
@@ -90,6 +92,11 @@ from tas.application.workspace_bindings import (
     WorkspaceBindingService,
     WorkspaceCommandResult,
     WorkspaceView,
+)
+from tas.adapters.persistence.sqlite.migrations import (
+    DEFAULT_MIGRATIONS_DIRECTORY,
+    MigrationDriftError,
+    SQLiteMigrator,
 )
 from tas.application.task_commands import TransitionTaskCommand, TransitionTaskService
 from tas.application.task_creation import CreateTaskRequest, CreateTaskService
@@ -769,9 +776,13 @@ def create_f3_app(
     )
     application = FastAPI(
         title="Team Agent System F3 Application API",
-        version="1.0.0-draft.17",
+        version=F3_APPLICATION_API_VERSION,
         description="F3-PREP central service; not production ready.",
     )
+    readiness_migrator = SQLiteMigrator(
+        database_path, DEFAULT_MIGRATIONS_DIRECTORY
+    )
+    readiness_catalog = readiness_migrator.migration_catalog(require_from_one=True)
     long_poll_guard = Lock()
     active_long_polls: set[str] = set()
 
@@ -1181,18 +1192,17 @@ def create_f3_app(
     @application.get("/readyz", include_in_schema=False)
     def readyz(request: Request) -> dict[str, str]:
         try:
-            with sqlite3.connect(database_path) as connection:
-                applied_versions = tuple(
-                    int(row[0])
-                    for row in connection.execute(
-                        "SELECT version FROM schema_migrations ORDER BY version"
-                    ).fetchall()
-                )
-                connection.execute("SELECT 1").fetchone()
-            if applied_versions != tuple(range(1, 40)):
-                raise RuntimeError
+            readiness_migrator.verify_current(
+                require_from_one=True, catalog=readiness_catalog
+            )
             _verify_artifact_storage_ready(artifact_root_path)
-        except (OSError, sqlite3.Error, RuntimeError):
+        except (
+            OSError,
+            sqlite3.Error,
+            MigrationDriftError,
+            RuntimeError,
+            ValueError,
+        ):
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={"status": "not_ready"},

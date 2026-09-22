@@ -65,6 +65,53 @@ class SQLiteMigrator:
                 connection.execute("ROLLBACK")
                 raise
 
+    def migration_catalog(
+        self, *, require_from_one: bool = False
+    ) -> tuple[Migration, ...]:
+        """Load and validate the authoritative ordered migration catalog."""
+        migrations = tuple(self._load_migrations())
+        versions = tuple(migration.version for migration in migrations)
+        if not versions:
+            raise ValueError("Migration catalog is empty")
+        expected = tuple(range(versions[0], versions[-1] + 1))
+        if versions != expected:
+            raise ValueError("Migration catalog contains a version gap")
+        if require_from_one and versions[0] != 1:
+            raise ValueError("Migration catalog must start at version 0001")
+        return migrations
+
+    def expected_versions(self, *, require_from_one: bool = False) -> tuple[int, ...]:
+        """Return the authoritative ordered migration versions."""
+        return tuple(
+            migration.version
+            for migration in self.migration_catalog(require_from_one=require_from_one)
+        )
+
+    def verify_current(
+        self,
+        *,
+        require_from_one: bool = False,
+        catalog: tuple[Migration, ...] | None = None,
+    ) -> tuple[int, ...]:
+        """Verify that the database exactly matches the authoritative catalog."""
+        migrations = (
+            self.migration_catalog(require_from_one=require_from_one)
+            if catalog is None
+            else catalog
+        )
+        expected = tuple(migration.version for migration in migrations)
+        if expected and expected != tuple(range(expected[0], expected[-1] + 1)):
+            raise ValueError("Migration catalog contains a version gap")
+        if require_from_one and (not expected or expected[0] != 1):
+            raise ValueError("Migration catalog must start at version 0001")
+        with closing(sqlite3.connect(self.database)) as connection:
+            applied = self._applied_migrations(connection)
+            self._validate_history(list(migrations), applied)
+            if tuple(sorted(applied)) != expected:
+                raise MigrationDriftError("Database migration history is incomplete")
+            connection.execute("SELECT 1").fetchone()
+        return expected
+
     def _load_migrations(self) -> list[Migration]:
         if not self.migrations_directory.is_dir():
             raise FileNotFoundError(
