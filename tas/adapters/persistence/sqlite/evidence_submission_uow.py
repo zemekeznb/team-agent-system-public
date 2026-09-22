@@ -330,7 +330,10 @@ class SQLiteEvidenceSubmissionUnitOfWork:
     def _artifacts_are_eligible(connection, actor_id, command) -> bool:
         rows = connection.execute(
             "SELECT upload.id,upload.purpose FROM tas_artifact_uploads upload "
+            "JOIN tas_artifact_security security ON security.artifact_id=upload.id "
             "WHERE upload.id IN ({}) AND upload.status='finalized' "
+            "AND security.availability_status='available' "
+            "AND security.scan_status IN ('clean','redacted') "
             "AND upload.task_id=? AND upload.producer_agent_id=?".format(
                 ",".join("?" for _ in command.artifact_ids) or "NULL"
             ),

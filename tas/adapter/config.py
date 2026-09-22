@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CONFIG_ENVIRONMENT_VARIABLE = "TAS_ADAPTER_CONFIG"
 MAX_CONFIG_BYTES = 64 * 1024
-SUPPORTED_API_VERSION = "1.0.0-draft.16"
+SUPPORTED_API_VERSION = "1.0.0-draft.17"
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 

@@ -11,7 +11,9 @@ from uuid import uuid4
 
 from tas.application.artifact_access import ArtifactDownload, EvidenceAccessView
 from tas.application.artifact_uploads import (
+    ArtifactAvailabilityStatus,
     ArtifactPurpose,
+    ArtifactSecurityStatus,
     ArtifactUpload,
     ArtifactUploadStatus,
 )
@@ -38,7 +40,7 @@ class SQLiteArtifactEvidenceAccessRepository:
         if requested_root.is_symlink():
             raise ArtifactAccessIntegrityError("Artifact storage root is unsafe")
         self.artifact_root = requested_root.resolve(strict=False)
-        requested_body_root = self.artifact_root / "quarantine"
+        requested_body_root = self.artifact_root / "available"
         if requested_body_root.is_symlink():
             raise ArtifactAccessIntegrityError("Artifact Body root is unsafe")
         self.body_root = requested_body_root.resolve(strict=False)
@@ -82,6 +84,13 @@ class SQLiteArtifactEvidenceAccessRepository:
             principal, artifact_id, now=now, correlation_id=correlation_id
         )
         if artifact is None:
+            return None
+        if artifact.availability_status is not ArtifactAvailabilityStatus.AVAILABLE:
+            self._audit_rejection(
+                principal, "artifact", artifact_id.value,
+                "artifact_read_unavailable", "artifact.read", now,
+                correlation_id,
+            )
             return None
         if artifact.actual_size is None or artifact.actual_sha256 is None:
             raise ArtifactAccessIntegrityError("Artifact Body metadata is incomplete")
@@ -131,6 +140,11 @@ class SQLiteArtifactEvidenceAccessRepository:
                 "JOIN tas_team_memberships member ON member.team_id=project.team_id "
                 "AND member.owner_id=author.owner_id WHERE evidence.id=? "
                 "AND evidence.status='finalized' "
+                "AND NOT EXISTS (SELECT 1 FROM tas_evidence_submission_artifacts link "
+                "JOIN tas_artifact_security security "
+                "ON security.artifact_id=link.artifact_id "
+                "WHERE link.evidence_id=evidence.id "
+                "AND security.availability_status<>'available') "
                 "AND task.assignee_agent_id=evidence.actor_agent_id "
                 "AND author.owner_id=? AND (? IS NULL OR evidence.actor_agent_id=?)",
                 (
@@ -193,7 +207,15 @@ class SQLiteArtifactEvidenceAccessRepository:
             "SELECT upload.id,upload.task_id,upload.producer_agent_id,upload.media_type,"
             "upload.purpose,upload.declared_size,upload.declared_sha256,upload.status,"
             "upload.actual_size,upload.actual_sha256,upload.created_at,upload.uploaded_at,"
-            "upload.finalized_at FROM tas_artifact_uploads upload "
+            "upload.finalized_at,security.scan_status,security.availability_status,"
+            "security.scanner_version,security.scanned_at,security.redaction_count,"
+            "source.source_artifact_id,derived.derived_artifact_id "
+            "FROM tas_artifact_uploads upload "
+            "JOIN tas_artifact_security security ON security.artifact_id=upload.id "
+            "LEFT JOIN tas_artifact_derivations source "
+            "ON source.derived_artifact_id=upload.id "
+            "LEFT JOIN tas_artifact_derivations derived "
+            "ON derived.source_artifact_id=upload.id "
             "JOIN tas_tasks task ON task.id=upload.task_id "
             "JOIN tas_projects project ON project.id=task.project_id "
             "JOIN tas_agents producer ON producer.id=upload.producer_agent_id "
@@ -275,4 +297,11 @@ class SQLiteArtifactEvidenceAccessRepository:
             datetime.fromisoformat(str(row[10])),
             None if row[11] is None else datetime.fromisoformat(str(row[11])),
             None if row[12] is None else datetime.fromisoformat(str(row[12])),
+            ArtifactSecurityStatus(str(row[13])),
+            ArtifactAvailabilityStatus(str(row[14])),
+            None if row[15] is None else str(row[15]),
+            None if row[16] is None else datetime.fromisoformat(str(row[16])),
+            int(row[17]),
+            None if row[18] is None else ArtifactId(str(row[18])),
+            None if row[19] is None else ArtifactId(str(row[19])),
         )

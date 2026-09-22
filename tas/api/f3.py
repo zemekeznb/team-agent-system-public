@@ -55,6 +55,7 @@ from tas.application.artifact_uploads import (
     ArtifactCommandResult,
     ArtifactPurpose,
     ArtifactUploadService,
+    RegisteredSecretScanner,
     ReserveArtifactCommand,
 )
 from tas.application.artifact_access import (
@@ -561,6 +562,13 @@ class ArtifactUploadResponse(BaseModel):
     created_at: datetime
     uploaded_at: datetime | None
     finalized_at: datetime | None
+    security_status: str
+    availability_status: str
+    scanner_version: str | None
+    scanned_at: datetime | None
+    redaction_count: int
+    source_artifact_id: str | None
+    derived_artifact_id: str | None
     replayed: bool
 
 
@@ -575,6 +583,13 @@ class ArtifactMetadataResponse(BaseModel):
     sha256: str
     created_at: datetime
     finalized_at: datetime
+    security_status: str
+    availability_status: str
+    scanner_version: str | None
+    scanned_at: datetime | None
+    redaction_count: int
+    source_artifact_id: str | None
+    derived_artifact_id: str | None
 
 
 class EvidenceReservationRequest(BaseModel):
@@ -697,6 +712,7 @@ def create_f3_app(
     policies: OwnerPolicyService,
     lease_tokens: LeaseTokenProvider,
     artifact_root: str | Path | None = None,
+    artifact_secrets: tuple[bytes, ...] = (),
 ) -> FastAPI:
     database_path = Path(database)
     artifact_root_path = (
@@ -730,7 +746,11 @@ def create_f3_app(
         SQLiteAuthoritativeValidationUnitOfWork(database_path)
     )
     artifact_uploads = ArtifactUploadService(
-        SQLiteArtifactUploadUnitOfWork(database_path, artifact_root_path)
+        SQLiteArtifactUploadUnitOfWork(
+            database_path,
+            artifact_root_path,
+            RegisteredSecretScanner(artifact_secrets),
+        )
     )
     artifact_access = ArtifactEvidenceAccessService(
         SQLiteArtifactEvidenceAccessRepository(database_path, artifact_root_path)
@@ -749,7 +769,7 @@ def create_f3_app(
     )
     application = FastAPI(
         title="Team Agent System F3 Application API",
-        version="1.0.0-draft.16",
+        version="1.0.0-draft.17",
         description="F3-PREP central service; not production ready.",
     )
     long_poll_guard = Lock()
@@ -1169,7 +1189,7 @@ def create_f3_app(
                     ).fetchall()
                 )
                 connection.execute("SELECT 1").fetchone()
-            if applied_versions != tuple(range(1, 39)):
+            if applied_versions != tuple(range(1, 40)):
                 raise RuntimeError
             _verify_artifact_storage_ready(artifact_root_path)
         except (OSError, sqlite3.Error, RuntimeError):
@@ -2590,6 +2610,19 @@ def _artifact_upload_response(result: ArtifactCommandResult) -> ArtifactUploadRe
         created_at=artifact.created_at,
         uploaded_at=artifact.uploaded_at,
         finalized_at=artifact.finalized_at,
+        security_status=artifact.security_status.value,
+        availability_status=artifact.availability_status.value,
+        scanner_version=artifact.scanner_version,
+        scanned_at=artifact.scanned_at,
+        redaction_count=artifact.redaction_count,
+        source_artifact_id=(
+            None if artifact.source_artifact_id is None
+            else artifact.source_artifact_id.value
+        ),
+        derived_artifact_id=(
+            None if artifact.derived_artifact_id is None
+            else artifact.derived_artifact_id.value
+        ),
         replayed=result.replayed,
     )
 
@@ -2610,6 +2643,19 @@ def _artifact_metadata_response(artifact) -> ArtifactMetadataResponse:
         sha256=artifact.actual_sha256,
         created_at=artifact.created_at,
         finalized_at=artifact.finalized_at,
+        security_status=artifact.security_status.value,
+        availability_status=artifact.availability_status.value,
+        scanner_version=artifact.scanner_version,
+        scanned_at=artifact.scanned_at,
+        redaction_count=artifact.redaction_count,
+        source_artifact_id=(
+            None if artifact.source_artifact_id is None
+            else artifact.source_artifact_id.value
+        ),
+        derived_artifact_id=(
+            None if artifact.derived_artifact_id is None
+            else artifact.derived_artifact_id.value
+        ),
     )
 
 
@@ -2716,7 +2762,11 @@ def _verify_artifact_storage_ready(artifact_root: Path) -> None:
     root = artifact_root.resolve(strict=True)
     staging = root / ".staging"
     quarantine = root / "quarantine"
-    if any(path.is_symlink() or not path.is_dir() for path in (root, staging, quarantine)):
+    available = root / "available"
+    if any(
+        path.is_symlink() or not path.is_dir()
+        for path in (root, staging, quarantine, available)
+    ):
         raise RuntimeError("Artifact storage is unavailable")
     probe = staging / f"{uuid4()}.ready"
     try:

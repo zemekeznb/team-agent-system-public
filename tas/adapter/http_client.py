@@ -348,6 +348,21 @@ class RemoteArtifactStatus(StrEnum):
     FINALIZED = "finalized"
 
 
+class RemoteArtifactSecurityStatus(StrEnum):
+    PENDING = "pending"
+    UNKNOWN = "unknown"
+    CLEAN = "clean"
+    SECRET_DETECTED = "secret_detected"
+    UNSUPPORTED = "unsupported"
+    SCAN_FAILED = "scan_failed"
+    REDACTED = "redacted"
+
+
+class RemoteArtifactAvailabilityStatus(StrEnum):
+    QUARANTINED = "quarantined"
+    AVAILABLE = "available"
+
+
 class RemoteArtifactPurpose(StrEnum):
     TEST_STDOUT = "test_stdout"
     TEST_STDERR = "test_stderr"
@@ -371,9 +386,20 @@ class _ArtifactPayload(BaseModel):
     created_at: datetime
     uploaded_at: datetime | None
     finalized_at: datetime | None
+    security_status: RemoteArtifactSecurityStatus
+    availability_status: RemoteArtifactAvailabilityStatus
+    scanner_version: str | None
+    scanned_at: datetime | None
+    redaction_count: int = Field(strict=True, ge=0)
+    source_artifact_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$"
+    )
+    derived_artifact_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$"
+    )
     replayed: bool
 
-    @field_validator("created_at", "uploaded_at", "finalized_at")
+    @field_validator("created_at", "uploaded_at", "finalized_at", "scanned_at")
     @classmethod
     def validate_times(cls, value: datetime | None) -> datetime | None:
         if value is not None and (value.tzinfo is None or value.utcoffset() != timedelta(0)):
@@ -404,6 +430,39 @@ class _ArtifactPayload(BaseModel):
                 self.finalized_at is not None
             ):
                 raise ValueError("Artifact finalized state is inconsistent")
+        unresolved = self.security_status in {
+            RemoteArtifactSecurityStatus.PENDING,
+            RemoteArtifactSecurityStatus.UNKNOWN,
+        }
+        available = self.security_status in {
+            RemoteArtifactSecurityStatus.CLEAN,
+            RemoteArtifactSecurityStatus.REDACTED,
+        }
+        if unresolved:
+            if (
+                self.availability_status
+                is not RemoteArtifactAvailabilityStatus.QUARANTINED
+                or self.scanner_version is not None
+                or self.scanned_at is not None
+                or self.redaction_count != 0
+            ):
+                raise ValueError("unscanned Artifact state is inconsistent")
+        elif self.scanner_version is None or self.scanned_at is None:
+            raise ValueError("scanned Artifact lacks scanner metadata")
+        elif available != (
+            self.availability_status is RemoteArtifactAvailabilityStatus.AVAILABLE
+        ):
+            raise ValueError("Artifact availability contradicts scan status")
+        if self.security_status is RemoteArtifactSecurityStatus.REDACTED:
+            if self.source_artifact_id is None or self.redaction_count < 1:
+                raise ValueError("redacted Artifact lacks source metadata")
+        elif self.source_artifact_id is not None:
+            raise ValueError("non-redacted Artifact cannot have a source")
+        if self.security_status is RemoteArtifactSecurityStatus.SECRET_DETECTED:
+            if self.derived_artifact_id is None or self.redaction_count < 1:
+                raise ValueError("Secret-bearing Artifact lacks its derivative")
+        elif self.derived_artifact_id is not None:
+            raise ValueError("non-secret Artifact cannot have a derivative")
         return self
 
 
@@ -418,13 +477,54 @@ class _ArtifactMetadataPayload(BaseModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
     finalized_at: datetime
+    security_status: RemoteArtifactSecurityStatus
+    availability_status: RemoteArtifactAvailabilityStatus
+    scanner_version: str | None
+    scanned_at: datetime | None
+    redaction_count: int = Field(strict=True, ge=0)
+    source_artifact_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$"
+    )
+    derived_artifact_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$"
+    )
 
-    @field_validator("created_at", "finalized_at")
+    @field_validator("created_at", "finalized_at", "scanned_at")
     @classmethod
-    def validate_times(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() != timedelta(0):
+    def validate_times(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() != timedelta(0)):
             raise ValueError("Artifact times must use UTC")
         return value
+
+    @model_validator(mode="after")
+    def validate_security(self) -> _ArtifactMetadataPayload:
+        available = self.security_status in {
+            RemoteArtifactSecurityStatus.CLEAN,
+            RemoteArtifactSecurityStatus.REDACTED,
+        }
+        if available != (
+            self.availability_status is RemoteArtifactAvailabilityStatus.AVAILABLE
+        ):
+            raise ValueError("Artifact metadata availability is inconsistent")
+        if self.security_status in {
+            RemoteArtifactSecurityStatus.PENDING,
+            RemoteArtifactSecurityStatus.UNKNOWN,
+        }:
+            if self.scanner_version is not None or self.scanned_at is not None:
+                raise ValueError("unscanned Artifact has scanner metadata")
+        elif self.scanner_version is None or self.scanned_at is None:
+            raise ValueError("scanned Artifact lacks scanner metadata")
+        if self.security_status is RemoteArtifactSecurityStatus.REDACTED:
+            if self.source_artifact_id is None or self.redaction_count < 1:
+                raise ValueError("redacted Artifact lacks source metadata")
+        elif self.source_artifact_id is not None:
+            raise ValueError("non-redacted Artifact cannot have a source")
+        if self.security_status is RemoteArtifactSecurityStatus.SECRET_DETECTED:
+            if self.derived_artifact_id is None or self.redaction_count < 1:
+                raise ValueError("Secret-bearing Artifact lacks its derivative")
+        elif self.derived_artifact_id is not None:
+            raise ValueError("non-secret Artifact cannot have a derivative")
+        return self
 
 
 class RemoteEvidenceStatus(StrEnum):
@@ -684,6 +784,13 @@ class RemoteArtifact:
     created_at: datetime
     uploaded_at: datetime | None
     finalized_at: datetime | None
+    security_status: RemoteArtifactSecurityStatus
+    availability_status: RemoteArtifactAvailabilityStatus
+    scanner_version: str | None
+    scanned_at: datetime | None
+    redaction_count: int
+    source_artifact_id: str | None
+    derived_artifact_id: str | None
     replayed: bool
     correlation_id: str
 
@@ -698,6 +805,13 @@ class RemoteArtifactMetadata:
     sha256: str
     created_at: datetime
     finalized_at: datetime
+    security_status: RemoteArtifactSecurityStatus
+    availability_status: RemoteArtifactAvailabilityStatus
+    scanner_version: str | None
+    scanned_at: datetime | None
+    redaction_count: int
+    source_artifact_id: str | None
+    derived_artifact_id: str | None
     correlation_id: str
 
 
@@ -1156,6 +1270,9 @@ class TASRemoteClient:
         return RemoteArtifactMetadata(
             value.id, value.task_id, value.media_type, value.purpose,
             value.size, value.sha256, value.created_at, value.finalized_at,
+            value.security_status, value.availability_status,
+            value.scanner_version, value.scanned_at, value.redaction_count,
+            value.source_artifact_id, value.derived_artifact_id,
             correlation_id,
         )
 
@@ -1538,6 +1655,13 @@ class TASRemoteClient:
             parsed.created_at,
             parsed.uploaded_at,
             parsed.finalized_at,
+            parsed.security_status,
+            parsed.availability_status,
+            parsed.scanner_version,
+            parsed.scanned_at,
+            parsed.redaction_count,
+            parsed.source_artifact_id,
+            parsed.derived_artifact_id,
             parsed.replayed,
             correlation_id,
         )

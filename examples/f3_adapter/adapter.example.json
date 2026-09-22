@@ -12,7 +12,7 @@
       "max_output_bytes": 1048576
     }
   },
-  "expected_api_version": "1.0.0-draft.16",
+  "expected_api_version": "1.0.0-draft.17",
   "connect_timeout_seconds": 5,
   "read_timeout_seconds": 30,
   "write_timeout_seconds": 30,

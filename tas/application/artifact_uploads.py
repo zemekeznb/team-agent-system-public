@@ -23,6 +23,21 @@ class ArtifactUploadStatus(StrEnum):
     FINALIZED = "finalized"
 
 
+class ArtifactSecurityStatus(StrEnum):
+    PENDING = "pending"
+    UNKNOWN = "unknown"
+    CLEAN = "clean"
+    SECRET_DETECTED = "secret_detected"
+    UNSUPPORTED = "unsupported"
+    SCAN_FAILED = "scan_failed"
+    REDACTED = "redacted"
+
+
+class ArtifactAvailabilityStatus(StrEnum):
+    QUARANTINED = "quarantined"
+    AVAILABLE = "available"
+
+
 class ArtifactPurpose(StrEnum):
     TEST_STDOUT = "test_stdout"
     TEST_STDERR = "test_stderr"
@@ -34,6 +49,66 @@ class ArtifactPurpose(StrEnum):
 ALLOWED_ARTIFACT_MEDIA_TYPES = frozenset(
     {"application/json", "application/octet-stream", "text/plain"}
 )
+SCANNABLE_ARTIFACT_MEDIA_TYPES = frozenset({"application/json", "text/plain"})
+ARTIFACT_SCANNER_VERSION = "registered-secret-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactScanResult:
+    status: ArtifactSecurityStatus
+    redacted_content: bytes | None = None
+    redaction_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.status not in {
+            ArtifactSecurityStatus.CLEAN,
+            ArtifactSecurityStatus.SECRET_DETECTED,
+            ArtifactSecurityStatus.UNSUPPORTED,
+        }:
+            raise DomainValidationError("scanner returned an invalid terminal status")
+        if self.status is ArtifactSecurityStatus.SECRET_DETECTED:
+            if self.redacted_content is None or self.redaction_count < 1:
+                raise DomainValidationError("Secret detection requires redacted content")
+        elif self.redacted_content is not None or self.redaction_count != 0:
+            raise DomainValidationError("non-secret scan cannot return redacted content")
+
+
+class ArtifactScanner(Protocol):
+    version: str
+
+    def scan(self, content: bytes, media_type: str) -> ArtifactScanResult: ...
+
+
+class RegisteredSecretScanner:
+    """Exact-value scanner for bounded Secrets registered at process assembly."""
+
+    version = ARTIFACT_SCANNER_VERSION
+
+    def __init__(self, secrets: tuple[bytes, ...] = ()) -> None:
+        if not isinstance(secrets, tuple) or any(
+            not isinstance(secret, bytes) or not 8 <= len(secret) <= 4096
+            for secret in secrets
+        ):
+            raise DomainValidationError("registered Secrets must be 8..4096 bytes")
+        self._secrets = tuple(sorted(set(secrets), key=lambda item: (-len(item), item)))
+
+    def scan(self, content: bytes, media_type: str) -> ArtifactScanResult:
+        if not isinstance(content, bytes) or len(content) > MAX_ARTIFACT_BYTES:
+            raise DomainValidationError("scanner content is invalid")
+        if media_type not in SCANNABLE_ARTIFACT_MEDIA_TYPES:
+            return ArtifactScanResult(ArtifactSecurityStatus.UNSUPPORTED)
+        redacted = content
+        count = 0
+        for secret in self._secrets:
+            occurrences = redacted.count(secret)
+            if occurrences:
+                redacted = redacted.replace(secret, b"*" * len(secret))
+                count += occurrences
+        if count:
+            return ArtifactScanResult(
+                ArtifactSecurityStatus.SECRET_DETECTED, redacted, count
+            )
+        return ArtifactScanResult(ArtifactSecurityStatus.CLEAN)
 
 
 def _sha256(value: str) -> None:
@@ -93,6 +168,15 @@ class ArtifactUpload:
     created_at: datetime
     uploaded_at: datetime | None
     finalized_at: datetime | None
+    security_status: ArtifactSecurityStatus = ArtifactSecurityStatus.PENDING
+    availability_status: ArtifactAvailabilityStatus = (
+        ArtifactAvailabilityStatus.QUARANTINED
+    )
+    scanner_version: str | None = None
+    scanned_at: datetime | None = None
+    redaction_count: int = 0
+    source_artifact_id: ArtifactId | None = None
+    derived_artifact_id: ArtifactId | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, ArtifactId):
@@ -107,6 +191,10 @@ class ArtifactUpload:
             raise TypeError("purpose must be ArtifactPurpose")
         if not isinstance(self.status, ArtifactUploadStatus):
             raise TypeError("status must be ArtifactUploadStatus")
+        if not isinstance(self.security_status, ArtifactSecurityStatus):
+            raise TypeError("security_status must be ArtifactSecurityStatus")
+        if not isinstance(self.availability_status, ArtifactAvailabilityStatus):
+            raise TypeError("availability_status must be ArtifactAvailabilityStatus")
         if (
             not isinstance(self.declared_size, int)
             or isinstance(self.declared_size, bool)
@@ -144,6 +232,49 @@ class ArtifactUpload:
                 _utc(self.finalized_at, "finalized_at")
             elif self.finalized_at is not None:
                 raise DomainValidationError("uploaded Artifact cannot be finalized")
+        if (
+            not isinstance(self.redaction_count, int)
+            or isinstance(self.redaction_count, bool)
+            or self.redaction_count < 0
+        ):
+            raise DomainValidationError("redaction_count must be a non-negative integer")
+        unresolved = self.security_status in {
+            ArtifactSecurityStatus.PENDING,
+            ArtifactSecurityStatus.UNKNOWN,
+        }
+        available = self.security_status in {
+            ArtifactSecurityStatus.CLEAN,
+            ArtifactSecurityStatus.REDACTED,
+        }
+        if unresolved:
+            if (
+                self.availability_status is not ArtifactAvailabilityStatus.QUARANTINED
+                or self.scanner_version is not None
+                or self.scanned_at is not None
+                or self.redaction_count != 0
+            ):
+                raise DomainValidationError("unscanned Artifact must remain quarantined")
+        else:
+            if not self.scanner_version or self.scanned_at is None:
+                raise DomainValidationError("scanned Artifact requires scanner metadata")
+            _utc(self.scanned_at, "scanned_at")
+            expected = (
+                ArtifactAvailabilityStatus.AVAILABLE
+                if available
+                else ArtifactAvailabilityStatus.QUARANTINED
+            )
+            if self.availability_status is not expected:
+                raise DomainValidationError("Artifact availability contradicts scan status")
+        if self.security_status is ArtifactSecurityStatus.REDACTED:
+            if self.redaction_count < 1 or self.source_artifact_id is None:
+                raise DomainValidationError("redacted Artifact requires its source")
+        elif self.source_artifact_id is not None:
+            raise DomainValidationError("only redacted Artifacts have a source")
+        if self.security_status is ArtifactSecurityStatus.SECRET_DETECTED:
+            if self.redaction_count < 1 or self.derived_artifact_id is None:
+                raise DomainValidationError("Secret-bearing Artifact requires redacted output")
+        elif self.derived_artifact_id is not None:
+            raise DomainValidationError("only Secret-bearing Artifacts have a derivative")
 
 
 @dataclass(frozen=True, slots=True)
