@@ -138,6 +138,29 @@ class SQLiteWorkRecordRepository:
             )
         return restored
 
+    def list_evidence_for_task(
+        self, task_id: TaskId
+    ) -> tuple[ObservedEvidence, ...]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT id,task_id,actor_agent_id,kind,payload_json,payload_sha256,"
+                "observed_at FROM tas_observed_evidence WHERE task_id=? "
+                "ORDER BY observed_at,id",
+                (task_id.value,),
+            ).fetchall()
+        return tuple(
+            ObservedEvidence(
+                EvidenceId(str(row[0])),
+                TaskId(str(row[1])),
+                AgentId(str(row[2])),
+                ObservedEvidenceKind(str(row[3])),
+                str(row[4]),
+                str(row[5]),
+                datetime.fromisoformat(str(row[6])),
+            )
+            for row in rows
+        )
+
     @staticmethod
     def _evidence_values(evidence: ObservedEvidence) -> tuple[object, ...]:
         return (

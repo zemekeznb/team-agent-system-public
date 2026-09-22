@@ -14,7 +14,7 @@ from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes.agent_card_routes import create_agent_card_routes
 from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
+from a2a.server.tasks import InMemoryTaskStore, TaskStore, TaskUpdater
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
@@ -211,6 +211,7 @@ def create_remote_agent_app(
     max_collection_items: int = 100,
     max_depth: int = 12,
     max_idempotency_entries: int = 1_000,
+    task_store: TaskStore | None = None,
 ) -> FastAPI:
     """Create an ASGI app publishing the official Agent Card and JSON-RPC route."""
     limits = {
@@ -260,7 +261,7 @@ def create_remote_agent_app(
     )
     handler = IdempotentRequestHandler(
         F2RemoteAgentExecutor(),
-        InMemoryTaskStore(),
+        task_store if task_store is not None else InMemoryTaskStore(),
         card,
         max_idempotency_entries=max_idempotency_entries,
     )

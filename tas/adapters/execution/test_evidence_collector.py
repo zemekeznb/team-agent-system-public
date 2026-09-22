@@ -45,6 +45,10 @@ class EvidenceReplayIntegrityError(TestEvidenceCollectionError):
 _PYTEST_COUNT = re.compile(
     rb"(?P<count>\d+) (?P<kind>passed|failed|skipped|error|errors)(?:[, ]|$)"
 )
+_SECRET_ENVIRONMENT_NAME = re.compile(
+    r"(?:^|_)(?:TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|API_KEY|PRIVATE_KEY)(?:$|_)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -76,6 +80,8 @@ class TestEvidenceCollector:
         *,
         timeout_seconds: float = 300,
         max_output_bytes: int = 4 * 1024 * 1024,
+        known_secrets: tuple[str, ...] = (),
+        inherit_environment: bool = True,
     ) -> None:
         if (
             not isinstance(timeout_seconds, (int, float))
@@ -89,12 +95,29 @@ class TestEvidenceCollector:
             or max_output_bytes <= 0
         ):
             raise ValueError("max_output_bytes must be a positive integer")
-        self.artifact_root = Path(artifact_root).resolve()
-        self.artifact_root.mkdir(parents=True, exist_ok=True)
-        if self.artifact_root.is_symlink():
+        requested_artifact_root = Path(artifact_root)
+        requested_artifact_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if self._is_link(requested_artifact_root):
             raise ValueError("artifact_root cannot be a symlink")
+        self.artifact_root = requested_artifact_root.resolve(strict=True)
+        os.chmod(self.artifact_root, 0o700)
         self.timeout_seconds = float(timeout_seconds)
         self.max_output_bytes = max_output_bytes
+        if not isinstance(inherit_environment, bool):
+            raise TypeError("inherit_environment must be bool")
+        self.inherit_environment = inherit_environment
+        if (
+            not isinstance(known_secrets, tuple)
+            or len(known_secrets) > 100
+            or any(
+                not isinstance(value, str)
+                or not 8 <= len(value.encode("utf-8")) <= 4096
+                for value in known_secrets
+            )
+            or len(set(known_secrets)) != len(known_secrets)
+        ):
+            raise ValueError("known_secrets must be unique 8..4096 byte strings")
+        self._known_secrets = tuple(value.encode("utf-8") for value in known_secrets)
 
     def collect(
         self,
@@ -137,6 +160,13 @@ class TestEvidenceCollector:
         ):
             raise TestEvidenceCollectionError("attempt and retry_of are inconsistent")
         process_environment = self._environment(environment)
+        request_secrets = self._request_secrets(process_environment)
+        if any(
+            secret.decode("utf-8") in argument
+            for secret in request_secrets
+            for argument in command
+        ):
+            raise TestEvidenceCollectionError("command cannot contain a known Secret")
         try:
             root = Path(workspace).resolve(strict=True)
         except (OSError, TypeError) as error:
@@ -153,7 +183,7 @@ class TestEvidenceCollector:
                 raise TestEvidenceCollectionError("idempotency_key must use the domain type")
             fingerprint = self._request_fingerprint(
                 root, repository, command, actor_id, task_id, commit, attempt,
-                retry_of, failure_outcome, environment,
+                retry_of, failure_outcome, environment, request_secrets,
             )
             request_path, replay = self._reserve_request(
                 actor_id, idempotency_key, fingerprint
@@ -186,6 +216,7 @@ class TestEvidenceCollector:
                 attempt, retry_of, started_at, finished_at,
                 max(0, round((time.monotonic() - started_monotonic) * 1000)), None,
                 CommandOutcome.INFRASTRUCTURE_ERROR, "collector_error", stdout, stderr,
+                request_secrets,
             )
             self._complete_request(request_path, fingerprint, evidence)
             return evidence
@@ -240,6 +271,7 @@ class TestEvidenceCollector:
             evidence_id, actor_id, task_id, repository, root, commit, command,
             attempt, retry_of, started_at, finished_at, duration_ms, exit_code,
             outcome, outcome_basis, stdout, stderr,
+            request_secrets,
         )
         self._complete_request(request_path, fingerprint, evidence)
         return evidence
@@ -248,9 +280,10 @@ class TestEvidenceCollector:
         self, actor_id: AgentId, key: IdempotencyKey, fingerprint: str
     ) -> tuple[Path, CommandEvidence | None]:
         directory = self.artifact_root / ".requests"
-        directory.mkdir(parents=False, exist_ok=True)
-        if directory.is_symlink():
+        directory.mkdir(parents=False, exist_ok=True, mode=0o700)
+        if self._is_link(directory):
             raise EvidenceReplayIntegrityError("evidence request ledger directory is unsafe")
+        os.chmod(directory, 0o700)
         identity = hashlib.sha256(
             f"{actor_id.value}\0{key.value}".encode("utf-8")
         ).hexdigest()
@@ -336,6 +369,7 @@ class TestEvidenceCollector:
         root: Path, repository: str, command: tuple[str, ...], actor_id: AgentId,
         task_id: TaskId, commit: str, attempt: int, retry_of: EvidenceId | None,
         failure_outcome: CommandOutcome, environment: dict[str, str] | None,
+        secrets: tuple[bytes, ...],
     ) -> str:
         payload = {
             "workspace": str(root), "repository": repository, "command": command,
@@ -346,6 +380,10 @@ class TestEvidenceCollector:
                 sorted((environment or {}).items()), ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")).hexdigest(),
+            "redactionPolicySha256": hashlib.sha256(json.dumps(
+                sorted(hashlib.sha256(value).hexdigest() for value in secrets),
+                separators=(",", ":"),
+            ).encode("ascii")).hexdigest(),
         }
         return hashlib.sha256(json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -356,7 +394,9 @@ class TestEvidenceCollector:
         def artifact(value: OutputArtifact) -> dict[str, object]:
             return {"reference": value.reference, "sha256": value.sha256,
                     "capturedSize": value.captured_size, "observedSize": value.observed_size,
-                    "truncated": value.truncated}
+                    "truncated": value.truncated,
+                    "preRedactionSha256": value.pre_redaction_sha256,
+                    "redactionCount": value.redaction_count}
         summary = None if evidence.summary is None else {
             "framework": evidence.summary.framework, "passed": evidence.summary.passed,
             "failed": evidence.summary.failed, "skipped": evidence.summary.skipped,
@@ -383,7 +423,9 @@ class TestEvidenceCollector:
                 if not isinstance(item, dict):
                     raise TypeError
                 return OutputArtifact(str(item["reference"]), str(item["sha256"]),
-                                      item["capturedSize"], item["observedSize"], item["truncated"])
+                                      item["capturedSize"], item["observedSize"], item["truncated"],
+                                      None if item.get("preRedactionSha256") is None else str(item["preRedactionSha256"]),
+                                      item.get("redactionCount", 0))
             summary_value = value["summary"]
             summary = None
             if isinstance(summary_value, dict):
@@ -411,30 +453,85 @@ class TestEvidenceCollector:
         attempt: int, retry_of: EvidenceId | None, started_at: datetime,
         finished_at: datetime, duration_ms: int, exit_code: int | None,
         outcome: CommandOutcome, outcome_basis: str, stdout: _Capture, stderr: _Capture,
+        secrets: tuple[bytes, ...],
     ) -> CommandEvidence:
-        stdout_artifact = self._save(evidence_id, "stdout", stdout)
-        stderr_artifact = self._save(evidence_id, "stderr", stderr)
+        stdout_artifact = self._save(evidence_id, "stdout", stdout, secrets)
+        stderr_artifact = self._save(evidence_id, "stderr", stderr, secrets)
         summary = None
         if not stdout.exceeded.is_set() and not stderr.exceeded.is_set():
-            summary = self._pytest_summary(
-                bytes(stdout.retained) + b"\n" + bytes(stderr.retained)
-            )
+            redacted_stdout, _ = self._redact(bytes(stdout.retained), secrets)
+            redacted_stderr, _ = self._redact(bytes(stderr.retained), secrets)
+            summary = self._pytest_summary(redacted_stdout + b"\n" + redacted_stderr)
         return CommandEvidence(
             evidence_id, actor_id, task_id, repository, str(root), commit, command,
             attempt, retry_of, started_at, finished_at, duration_ms,
             exit_code, outcome, outcome_basis, stdout_artifact, stderr_artifact, summary,
         )
 
-    def _save(self, evidence_id: EvidenceId, name: str, capture: _Capture) -> OutputArtifact:
+    def _save(
+        self,
+        evidence_id: EvidenceId,
+        name: str,
+        capture: _Capture,
+        secrets: tuple[bytes, ...],
+    ) -> OutputArtifact:
         directory = self.artifact_root / evidence_id.value
-        directory.mkdir(parents=False, exist_ok=True)
+        directory.mkdir(parents=False, exist_ok=True, mode=0o700)
+        if self._is_link(directory):
+            raise TestEvidenceCollectionError("evidence Artifact directory is unsafe")
+        os.chmod(directory, 0o700)
         path = directory / f"{name}.bin"
-        path.write_bytes(capture.retained)
+        persisted, redaction_count = self._redact(bytes(capture.retained), secrets)
+        with path.open("xb") as stream:
+            os.chmod(path, 0o600)
+            stream.write(persisted)
+            stream.flush()
+            os.fsync(stream.fileno())
         reference = path.relative_to(self.artifact_root).as_posix()
         return OutputArtifact(
-            reference, hashlib.sha256(capture.retained).hexdigest(), len(capture.retained),
-            capture.observed_size, capture.observed_size > len(capture.retained),
+            reference,
+            hashlib.sha256(persisted).hexdigest(),
+            len(persisted),
+            capture.observed_size,
+            capture.observed_size > len(persisted),
+            capture.digest.hexdigest(),
+            redaction_count,
         )
+
+    def _request_secrets(
+        self, environment: dict[str, str] | None
+    ) -> tuple[bytes, ...]:
+        values = list(self._known_secrets)
+        for key, value in (environment or {}).items():
+            if _SECRET_ENVIRONMENT_NAME.search(key) and value:
+                encoded = value.encode("utf-8")
+                if not 8 <= len(encoded) <= 4096:
+                    raise TestEvidenceCollectionError(
+                        "sensitive environment values must be 8..4096 bytes"
+                    )
+                values.append(encoded)
+        return tuple(sorted(set(values), key=lambda item: (-len(item), item)))
+
+    @staticmethod
+    def _redact(content: bytes, secrets: tuple[bytes, ...]) -> tuple[bytes, int]:
+        redacted = content
+        count = 0
+        for secret in secrets:
+            occurrences = redacted.count(secret)
+            if occurrences:
+                redacted = redacted.replace(secret, b"*" * len(secret))
+                count += occurrences
+            # If capture stopped in the middle of a known Secret, redact its retained prefix.
+            if len(redacted) < len(secret):
+                maximum = len(redacted)
+            else:
+                maximum = len(secret) - 1
+            for length in range(maximum, 3, -1):
+                if redacted.endswith(secret[:length]):
+                    redacted = redacted[:-length] + b"*" * length
+                    count += 1
+                    break
+        return redacted, count
 
     @staticmethod
     def _pytest_summary(output: bytes) -> TestSummary | None:
@@ -449,9 +546,8 @@ class TestEvidenceCollector:
             counts[kind] = int(match.group("count"))
         return TestSummary("pytest", **counts)
 
-    @staticmethod
-    def _environment(overrides: dict[str, str] | None) -> dict[str, str]:
-        environment = os.environ.copy()
+    def _environment(self, overrides: dict[str, str] | None) -> dict[str, str]:
+        environment = os.environ.copy() if self.inherit_environment else {}
         if overrides is None:
             return environment
         if any(
@@ -462,6 +558,12 @@ class TestEvidenceCollector:
             raise TestEvidenceCollectionError("environment override is invalid")
         environment.update(overrides)
         return environment
+
+    @staticmethod
+    def _is_link(path: Path) -> bool:
+        return path.is_symlink() or (
+            hasattr(path, "is_junction") and path.is_junction()
+        )
 
     @staticmethod
     def _git(root: Path, *arguments: str) -> str:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -15,10 +15,14 @@ from tas.adapters.persistence.sqlite.task_creation_uow import (
 )
 from tas.adapters.persistence.sqlite.task_repository import SQLiteTaskRepository
 from tas.adapters.persistence.sqlite.a2a_delegation_repository import (
-    SQLiteA2ADelegationResultRepository,
+    SQLiteA2ADelegationOperationRepository,
 )
 from tas.application.task_creation import CreateTaskRequest, CreateTaskService
-from tas.application.a2a_bridge import A2AGateway, DelegateTaskService
+from tas.application.a2a_bridge import (
+    A2AGateway,
+    A2ARecoveryPolicy,
+    DelegateTaskService,
+)
 from tas.application.inbox_polling import InboxPollingService
 from tas.domain.collaboration import TaskId
 from tas.domain.idempotency import IdempotencyKey
@@ -53,6 +57,8 @@ class DelegateTaskToolResult(TypedDict):
     status: str
     artifact_reference: str | None
     content_trusted: bool
+    operation_id: str
+    message_id: str
 
 
 class PollInboxToolResult(TypedDict):
@@ -85,10 +91,13 @@ def create_mcp_server(
     actor_id: AgentId,
     task_id_factory: Callable[[], TaskId] | None = None,
     a2a_gateway: A2AGateway | None = None,
+    a2a_recovery_policy: A2ARecoveryPolicy | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> FastMCP:
     """Build an MCP server whose authenticated actor is process-bound."""
     if not isinstance(actor_id, AgentId):
         raise TypeError("actor_id must be AgentId")
+    current_time = clock or (lambda: datetime.now(UTC))
 
     service = CreateTaskService(
         SQLiteTaskCreationUnitOfWork(database, task_id_factory=task_id_factory)
@@ -141,8 +150,10 @@ def create_mcp_server(
         delegation = DelegateTaskService(
             service,
             SQLiteTaskRepository(database),
-            SQLiteA2ADelegationResultRepository(database),
+            SQLiteA2ADelegationOperationRepository(database),
             a2a_gateway,
+            target_id=getattr(a2a_gateway, "target_id", "configured-a2a"),
+            recovery_policy=a2a_recovery_policy,
         )
 
         @server.tool(name="tas_delegate_task", structured_output=True)
@@ -163,6 +174,7 @@ def create_mcp_server(
                     title=title,
                 ),
                 trace_id=str(ctx.request_id),
+                now=current_time(),
             )
             return {
                 "local_task_id": result.local_task_id,
@@ -171,6 +183,8 @@ def create_mcp_server(
                 "status": result.status,
                 "artifact_reference": result.artifact_reference,
                 "content_trusted": result.content_trusted,
+                "operation_id": result.operation_id,
+                "message_id": result.message_id,
             }
 
     @server.tool(name="tas_poll_inbox", structured_output=True)

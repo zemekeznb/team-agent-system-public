@@ -46,6 +46,40 @@ class EvidenceId:
         _text(self.value, "EvidenceId", 255)
 
 
+@dataclass(frozen=True, slots=True)
+class WorkspaceBindingId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _text(self.value, "WorkspaceBindingId", 255)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskWorkspaceBinding:
+    """Server-side binding used to validate Evidence without trusting a raw path."""
+
+    id: WorkspaceBindingId
+    task_id: TaskId
+    actor_id: AgentId
+    repository: str
+    root_sha256: str
+    bound_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, WorkspaceBindingId):
+            raise TypeError("id must be WorkspaceBindingId")
+        if not isinstance(self.task_id, TaskId) or not isinstance(self.actor_id, AgentId):
+            raise TypeError("task_id and actor_id must use domain IDs")
+        _text(self.repository, "repository", 255)
+        _sha256(self.root_sha256, "root_sha256")
+        if (
+            not isinstance(self.bound_at, datetime)
+            or self.bound_at.tzinfo is None
+            or self.bound_at.utcoffset() != timedelta(0)
+        ):
+            raise DomainValidationError("bound_at must use UTC")
+
+
 class FileEvidenceKind(StrEnum):
     FILE = "file"
     SYMLINK = "symlink"
@@ -147,6 +181,8 @@ class OutputArtifact:
     captured_size: int
     observed_size: int
     truncated: bool
+    pre_redaction_sha256: str | None = None
+    redaction_count: int = 0
 
     def __post_init__(self) -> None:
         _text(self.reference, "reference")
@@ -167,6 +203,16 @@ class OutputArtifact:
             raise TypeError("truncated must be bool")
         if self.truncated != (self.observed_size > self.captured_size):
             raise DomainValidationError("truncated must match artifact sizes")
+        if self.pre_redaction_sha256 is not None:
+            _sha256(self.pre_redaction_sha256, "pre_redaction_sha256")
+        if (
+            not isinstance(self.redaction_count, int)
+            or isinstance(self.redaction_count, bool)
+            or self.redaction_count < 0
+        ):
+            raise DomainValidationError("redaction_count must be a non-negative integer")
+        if self.redaction_count and self.pre_redaction_sha256 is None:
+            raise DomainValidationError("redacted Artifact requires pre-redaction digest")
 
 
 @dataclass(frozen=True, slots=True)

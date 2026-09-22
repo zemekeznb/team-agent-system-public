@@ -31,9 +31,17 @@ from .idempotency import (
     OperationName,
     RequestFingerprint,
 )
-from .work_record import WorkRecord, WorkRecordId
+from .work_record import ObservedEvidence, WorkRecord, WorkRecordId
+from .evidence import TaskWorkspaceBinding, WorkspaceBindingId
+from .credential import (
+    Credential,
+    CredentialAuthenticationRecord,
+    CredentialId,
+    CredentialRevocationReason,
+)
 from .epistemic import EpistemicEvent
 from .memory import TeamMemory, MemoryApplicabilityAssessment, MemoryCodeScope, MemoryId, MemoryRevision, MemorySearchQuery
+from .policy import OwnerPolicy, PolicyMutationContext
 
 
 class IdentityPersistenceError(RuntimeError):
@@ -113,6 +121,99 @@ class WorkRecordRepository(Protocol):
     def add(self, record: WorkRecord) -> None: ...
     def get(self, record_id: WorkRecordId) -> WorkRecord | None: ...
     def list_for_task(self, task_id: TaskId) -> tuple[WorkRecord, ...]: ...
+    def list_evidence_for_task(self, task_id: TaskId) -> tuple[ObservedEvidence, ...]: ...
+
+
+class WorkspaceBindingRepository(Protocol):
+    def add(self, binding: TaskWorkspaceBinding) -> None: ...
+    def get(self, binding_id: WorkspaceBindingId) -> TaskWorkspaceBinding | None: ...
+    def get_for_task(self, task_id: TaskId) -> TaskWorkspaceBinding | None: ...
+
+
+class CredentialPersistenceError(RuntimeError):
+    """Raised when Credential lifecycle state cannot be persisted safely."""
+
+
+class CredentialConflictError(CredentialPersistenceError):
+    """Raised when Credential state changed or an identifier conflicts."""
+
+
+class CredentialReferenceError(CredentialPersistenceError):
+    """Raised when a Credential subject binding is unknown or inconsistent."""
+
+
+class CredentialRepository(Protocol):
+    def add_with_audit(
+        self,
+        credential: Credential,
+        secret_digest: str,
+        secret_key_id: str,
+        event: AuditEvent,
+    ) -> None: ...
+    def get(self, credential_id: CredentialId) -> Credential | None: ...
+    def get_for_authentication(
+        self, credential_id: CredentialId
+    ) -> CredentialAuthenticationRecord | None: ...
+    def revoke_with_audit(
+        self,
+        credential_id: CredentialId,
+        revoked_at: datetime,
+        reason: CredentialRevocationReason,
+        event: AuditEvent,
+    ) -> Credential: ...
+    def rotate_with_audit(
+        self,
+        old_id: CredentialId,
+        replacement: Credential,
+        secret_digest: str,
+        secret_key_id: str,
+        event: AuditEvent,
+    ) -> tuple[Credential, Credential]: ...
+
+
+class CredentialTokenProvider(Protocol):
+    def issue(self, credential_id: CredentialId) -> tuple[str, str, str]: ...
+    def identify(self, token: str) -> CredentialId: ...
+    def verify(
+        self,
+        token: str,
+        credential_id: CredentialId,
+        key_id: str,
+        expected_digest: str,
+    ) -> bool: ...
+
+
+class PolicyPersistenceError(RuntimeError):
+    """Raised when a Policy version or current selection cannot be committed."""
+
+
+class PolicyConflictError(PolicyPersistenceError):
+    """Raised for duplicate versions or stale current selection."""
+
+
+class PolicyIdempotencyConflictError(PolicyConflictError):
+    """An API idempotency key was reused for a different Policy mutation."""
+
+
+class PolicyRepository(Protocol):
+    def add_with_audit(
+        self,
+        policy: OwnerPolicy,
+        created_at: datetime,
+        created_by: str,
+        event: AuditEvent,
+        idempotency: PolicyMutationContext | None = None,
+    ) -> None: ...
+    def get(self, owner_id: OwnerId, version: str) -> OwnerPolicy | None: ...
+    def get_current(self, owner_id: OwnerId) -> OwnerPolicy | None: ...
+    def select_current_with_audit(
+        self,
+        owner_id: OwnerId,
+        version: str,
+        expected_current_version: str | None,
+        event: AuditEvent,
+        idempotency: PolicyMutationContext | None = None,
+    ) -> OwnerPolicy: ...
 
 
 class EpistemicRepository(Protocol):
@@ -189,6 +290,9 @@ class IdempotencyRepository(Protocol):
         key: IdempotencyKey,
         fingerprint: RequestFingerprint,
     ) -> IdempotencyRecord: ...
+    def complete(
+        self, reservation: IdempotencyRecord, result: dict[str, object]
+    ) -> IdempotencyRecord: ...
 
 
 class ApprovalRepository(Protocol):
@@ -196,6 +300,3 @@ class ApprovalRepository(Protocol):
     def get(self, approval_id: ApprovalId) -> Approval | None: ...
     def save_resolution(self, approval: Approval) -> None: ...
     def resolve_with_task(self, approval: Approval) -> None: ...
-    def complete(
-        self, reservation: IdempotencyRecord, result: dict[str, object]
-    ) -> IdempotencyRecord: ...

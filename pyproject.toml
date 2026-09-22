@@ -11,15 +11,23 @@ requires-python = ">=3.12"
 dependencies = [
   "a2a-sdk[http-server]>=1.1,<2",
   "fastapi>=0.116,<0.117",
+  "httpx>=0.28,<1",
   "mcp>=1.30,<2",
   "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "httpx>=0.28,<1",
+  "cryptography>=44,<51",
   "pytest>=8.4,<9",
 ]
+adapter = [
+  "keyring>=25,<26",
+]
+
+[project.scripts]
+tas-adapter = "tas.adapter.cli:main"
+tas-adapter-mcp = "tas.adapter.mcp_stdio:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tas"]

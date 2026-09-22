@@ -40,6 +40,12 @@ class AuditEventKind(StrEnum):
     ACTION_GRANT_REJECTED = "action_grant_rejected"
     ACTION_RESULT_UNKNOWN = "action_result_unknown"
     ACTION_RECEIPT_RECONCILED = "action_receipt_reconciled"
+    CREDENTIAL_ISSUED = "credential_issued"
+    CREDENTIAL_REVOKED = "credential_revoked"
+    CREDENTIAL_ROTATED = "credential_rotated"
+    AUTHENTICATION_REJECTED = "authentication_rejected"
+    POLICY_VERSION_CREATED = "policy_version_created"
+    POLICY_CURRENT_CHANGED = "policy_current_changed"
 
 
 class AuditActorKind(StrEnum):
@@ -56,6 +62,11 @@ class AuditOutcome(StrEnum):
     CONSUMED = "consumed"
     RESULT_UNKNOWN = "result_unknown"
     RECONCILED = "reconciled"
+    ISSUED = "issued"
+    REVOKED = "revoked"
+    ROTATED = "rotated"
+    CREATED = "created"
+    SELECTED = "selected"
 
 
 class ActionGrantAuditReason(StrEnum):

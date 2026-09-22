@@ -122,7 +122,7 @@ class ConsumeApprovalGrantService:
             preconditions,
             now,
         )
-        fingerprint = _fingerprint(request)
+        fingerprint = fingerprint_action_request(request)
         try:
             existing = self.grants.get(approval_id, fingerprint)
         except GrantConsumptionConflictError:
@@ -382,7 +382,7 @@ class ConsumeApprovalGrantService:
             return True
 
 
-def _fingerprint(request: ActionExecutionRequest) -> str:
+def fingerprint_action_request(request: ActionExecutionRequest) -> str:
     intent = request.intent
     payload = {
         "approval_id": request.approval_id.value,

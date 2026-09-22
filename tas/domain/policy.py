@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 
 from tas.domain.collaboration import TaskId
+from tas.domain.idempotency import IdempotencyKey, RequestFingerprint
 from tas.domain.identity import AgentId, OwnerId, ProjectId, TeamId
 
 
@@ -115,6 +116,23 @@ class OwnerPolicy:
         actions = [rule.action for rule in self.rules]
         if len(actions) != len(set(actions)):
             raise ValueError("policy cannot contain duplicate Action rules")
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyMutationContext:
+    owner_id: OwnerId
+    operation: str
+    key: IdempotencyKey
+    fingerprint: RequestFingerprint
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.owner_id, OwnerId):
+            raise TypeError("owner_id must be OwnerId")
+        _require_text(self.operation, "operation")
+        if not isinstance(self.key, IdempotencyKey):
+            raise TypeError("key must be IdempotencyKey")
+        if not isinstance(self.fingerprint, RequestFingerprint):
+            raise TypeError("fingerprint must be RequestFingerprint")
 
 
 @dataclass(frozen=True, slots=True)

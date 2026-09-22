@@ -263,6 +263,10 @@ class GitEvidenceCollector:
         max_bytes: int | None = None,
     ) -> tuple[int, bytes]:
         limit = self.max_command_output_bytes if max_bytes is None else max_bytes
+        environment = os.environ.copy()
+        for key in tuple(environment):
+            if key.upper().startswith("GIT_"):
+                environment.pop(key, None)
         with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
             try:
                 completed = subprocess.run(
@@ -274,6 +278,7 @@ class GitEvidenceCollector:
                     timeout=self.timeout_seconds,
                     check=False,
                     shell=False,
+                    env=environment,
                 )
             except subprocess.TimeoutExpired as exception:
                 raise GitEvidenceCollectionError("Git command timed out") from exception
