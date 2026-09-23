@@ -222,35 +222,35 @@ class SQLiteArtifactReconciliationService:
 
         file_count = 0
         try:
-            root_entries = tuple(self.root.iterdir())
+            for path in self.root.iterdir():
+                if path.name in roots:
+                    continue
+                file_count += 1
+                if file_count > self.max_files:
+                    raise ArtifactReconciliationError("Artifact file inventory limit exceeded")
+                reference = hashlib.sha256(path.name.encode("utf-8", errors="replace")).hexdigest()
+                issues.append(ArtifactReconciliationIssue("unregistered_root_entry", reference))
         except OSError as error:
             raise ArtifactReconciliationError("Artifact root cannot be inventoried") from error
-        for path in root_entries:
-            if path.name in roots:
-                continue
-            file_count += 1
-            reference = hashlib.sha256(path.name.encode("utf-8", errors="replace")).hexdigest()
-            issues.append(ArtifactReconciliationIssue("unregistered_root_entry", reference))
         for location, directory in roots.items():
             try:
-                children = tuple(directory.iterdir())
+                for path in directory.iterdir():
+                    file_count += 1
+                    if file_count > self.max_files:
+                        raise ArtifactReconciliationError("Artifact file inventory limit exceeded")
+                    if (location, path.name) in expected_files:
+                        continue
+                    reference = hashlib.sha256(
+                        f"{location}/{path.name}".encode("utf-8", errors="replace")
+                    ).hexdigest()
+                    code = (
+                        "unsafe_entry" if path.is_symlink() or not path.is_file()
+                        else "staging_remnant" if location == ".staging"
+                        else "unregistered_body"
+                    )
+                    issues.append(ArtifactReconciliationIssue(code, reference))
             except OSError as error:
                 raise ArtifactReconciliationError("Artifact directory cannot be inventoried") from error
-            file_count += len(children)
-            if file_count > self.max_files:
-                raise ArtifactReconciliationError("Artifact file inventory limit exceeded")
-            for path in children:
-                if (location, path.name) in expected_files:
-                    continue
-                reference = hashlib.sha256(
-                    f"{location}/{path.name}".encode("utf-8", errors="replace")
-                ).hexdigest()
-                code = (
-                    "unsafe_entry" if path.is_symlink() or not path.is_file()
-                    else "staging_remnant" if location == ".staging"
-                    else "unregistered_body"
-                )
-                issues.append(ArtifactReconciliationIssue(code, reference))
         ordered_issues = tuple(sorted(issues, key=lambda item: (item.code, item.reference)))
         if ordered_issues:
             return ArtifactReconciliationReport(ordered_issues, None)
