@@ -19,6 +19,7 @@ from tas.adapters.persistence.sqlite.artifact_rows import (
 )
 from tas.application.artifact_uploads import (
     MAX_TASK_ARTIFACT_BYTES,
+    MAX_TASK_ARTIFACT_COUNT,
     MAX_OWNER_ARTIFACT_BYTES,
     MAX_OWNER_ARTIFACT_COUNT,
     ArtifactAvailabilityStatus,
@@ -144,23 +145,36 @@ class SQLiteArtifactUploadUnitOfWork:
                     2 if command.media_type in {"text/plain", "application/json"} else 1
                 )
                 totals = connection.execute(
-                    "SELECT count(*),COALESCE(sum(life.charged_bytes),0) "
+                    "SELECT COALESCE(sum(CASE WHEN upload.status<>'finalized' "
+                    "AND upload.media_type IN ('text/plain','application/json') "
+                    "THEN 2 ELSE 1 END),0),COALESCE(sum(life.charged_bytes),0) "
                     "FROM tas_artifact_uploads upload JOIN tas_artifact_lifecycle life "
                     "ON life.artifact_id=upload.id WHERE upload.task_id=? "
                     "AND life.cleanup_status<>'purged'",
                     (command.task_id.value,),
                 ).fetchone()
-                if int(totals[0]) >= 1000 or int(totals[1]) + charge > MAX_TASK_ARTIFACT_BYTES:
+                slots = (
+                    2 if command.media_type in {"text/plain", "application/json"} else 1
+                )
+                if (
+                    int(totals[0]) + slots > MAX_TASK_ARTIFACT_COUNT
+                    or int(totals[1]) + charge > MAX_TASK_ARTIFACT_BYTES
+                ):
                     rejection = ("task", command.task_id.value, "artifact_quota_exceeded")
                     raise ArtifactUploadConflictError("Artifact Task quota is exceeded")
                 owner_totals = connection.execute(
-                    "SELECT count(*),COALESCE(sum(charged_bytes),0) "
-                    "FROM tas_artifact_lifecycle WHERE owner_id=("
+                    "SELECT COALESCE(sum(CASE WHEN upload.status<>'finalized' "
+                    "AND upload.media_type IN ('text/plain','application/json') "
+                    "THEN 2 ELSE 1 END),0),COALESCE(sum(life.charged_bytes),0) "
+                    "FROM tas_artifact_lifecycle life JOIN tas_artifact_uploads upload "
+                    "ON upload.id=life.artifact_id WHERE life.owner_id=("
                     "SELECT owner_id FROM tas_agents WHERE id=?) "
-                    "AND cleanup_status<>'purged'", (actor_id.value,),
+                    "AND life.cleanup_status<>'purged'", (actor_id.value,),
                 ).fetchone()
-                if (int(owner_totals[0]) >= MAX_OWNER_ARTIFACT_COUNT
-                    or int(owner_totals[1]) + charge > MAX_OWNER_ARTIFACT_BYTES):
+                if (
+                    int(owner_totals[0]) + slots > MAX_OWNER_ARTIFACT_COUNT
+                    or int(owner_totals[1]) + charge > MAX_OWNER_ARTIFACT_BYTES
+                ):
                     rejection = ("task", command.task_id.value, "artifact_owner_quota_exceeded")
                     raise ArtifactUploadConflictError("Artifact Owner quota is exceeded")
                 artifact_id = ArtifactId(str(uuid4()))
