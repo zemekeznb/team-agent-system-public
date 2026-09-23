@@ -10,12 +10,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from tas.application.artifact_access import ArtifactDownload, EvidenceAccessView
+from tas.adapters.persistence.sqlite.artifact_rows import (
+    ARTIFACT_COLUMNS, ARTIFACT_JOINS, restore_artifact,
+)
 from tas.application.artifact_uploads import (
     ArtifactAvailabilityStatus,
-    ArtifactPurpose,
-    ArtifactSecurityStatus,
     ArtifactUpload,
-    ArtifactUploadStatus,
 )
 from tas.application.evidence_submissions import (
     EvidenceSubmission,
@@ -204,24 +204,15 @@ class SQLiteArtifactEvidenceAccessRepository:
 
     def _artifact_row(self, connection, principal, artifact_id):
         return connection.execute(
-            "SELECT upload.id,upload.task_id,upload.producer_agent_id,upload.media_type,"
-            "upload.purpose,upload.declared_size,upload.declared_sha256,upload.status,"
-            "upload.actual_size,upload.actual_sha256,upload.created_at,upload.uploaded_at,"
-            "upload.finalized_at,security.scan_status,security.availability_status,"
-            "security.scanner_version,security.scanned_at,security.redaction_count,"
-            "source.source_artifact_id,derived.derived_artifact_id "
-            "FROM tas_artifact_uploads upload "
-            "JOIN tas_artifact_security security ON security.artifact_id=upload.id "
-            "LEFT JOIN tas_artifact_derivations source "
-            "ON source.derived_artifact_id=upload.id "
-            "LEFT JOIN tas_artifact_derivations derived "
-            "ON derived.source_artifact_id=upload.id "
+            f"SELECT {ARTIFACT_COLUMNS} FROM tas_artifact_uploads upload "
+            + ARTIFACT_JOINS +
             "JOIN tas_tasks task ON task.id=upload.task_id "
             "JOIN tas_projects project ON project.id=task.project_id "
             "JOIN tas_agents producer ON producer.id=upload.producer_agent_id "
             "JOIN tas_team_memberships member ON member.team_id=project.team_id "
             "AND member.owner_id=producer.owner_id WHERE upload.id=? "
-            "AND upload.status='finalized' "
+            "AND upload.status='finalized' AND life.cleanup_status='active' "
+            "AND life.owner_id=producer.owner_id "
             "AND task.assignee_agent_id=upload.producer_agent_id "
             "AND producer.owner_id=? AND (? IS NULL OR upload.producer_agent_id=?)",
             (
@@ -283,25 +274,4 @@ class SQLiteArtifactEvidenceAccessRepository:
 
     @staticmethod
     def _restore_artifact(row) -> ArtifactUpload:
-        return ArtifactUpload(
-            ArtifactId(str(row[0])),
-            TaskId(str(row[1])),
-            AgentId(str(row[2])),
-            str(row[3]),
-            ArtifactPurpose(str(row[4])),
-            int(row[5]),
-            str(row[6]),
-            ArtifactUploadStatus(str(row[7])),
-            None if row[8] is None else int(row[8]),
-            None if row[9] is None else str(row[9]),
-            datetime.fromisoformat(str(row[10])),
-            None if row[11] is None else datetime.fromisoformat(str(row[11])),
-            None if row[12] is None else datetime.fromisoformat(str(row[12])),
-            ArtifactSecurityStatus(str(row[13])),
-            ArtifactAvailabilityStatus(str(row[14])),
-            None if row[15] is None else str(row[15]),
-            None if row[16] is None else datetime.fromisoformat(str(row[16])),
-            int(row[17]),
-            None if row[18] is None else ArtifactId(str(row[18])),
-            None if row[19] is None else ArtifactId(str(row[19])),
-        )
+        return restore_artifact(row)

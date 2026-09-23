@@ -331,14 +331,17 @@ class SQLiteEvidenceSubmissionUnitOfWork:
         rows = connection.execute(
             "SELECT upload.id,upload.purpose FROM tas_artifact_uploads upload "
             "JOIN tas_artifact_security security ON security.artifact_id=upload.id "
+            "JOIN tas_artifact_lifecycle life ON life.artifact_id=upload.id "
             "WHERE upload.id IN ({}) AND upload.status='finalized' "
             "AND security.availability_status='available' "
             "AND security.scan_status IN ('clean','redacted') "
+            "AND life.cleanup_status='active' "
+            "AND life.owner_id=(SELECT owner_id FROM tas_agents WHERE id=?) "
             "AND upload.task_id=? AND upload.producer_agent_id=?".format(
                 ",".join("?" for _ in command.artifact_ids) or "NULL"
             ),
             tuple(item.value for item in command.artifact_ids)
-            + (command.task_id.value, actor_id.value),
+            + (actor_id.value, command.task_id.value, actor_id.value),
         ).fetchall()
         purposes = {str(row[0]): str(row[1]) for row in rows}
         if set(purposes) != {item.value for item in command.artifact_ids}:

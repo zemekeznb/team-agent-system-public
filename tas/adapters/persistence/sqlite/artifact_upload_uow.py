@@ -14,11 +14,15 @@ from tas.adapters.persistence.sqlite.idempotency_repository import (
     IdempotencyConflictError,
     fingerprint_payload,
 )
+from tas.adapters.persistence.sqlite.artifact_rows import (
+    ARTIFACT_COLUMNS, ARTIFACT_JOINS, restore_artifact,
+)
 from tas.application.artifact_uploads import (
     MAX_TASK_ARTIFACT_BYTES,
+    MAX_OWNER_ARTIFACT_BYTES,
+    MAX_OWNER_ARTIFACT_COUNT,
     ArtifactAvailabilityStatus,
     ArtifactCommandResult,
-    ArtifactPurpose,
     ArtifactScanner,
     ArtifactSecurityStatus,
     ArtifactUpload,
@@ -27,7 +31,7 @@ from tas.application.artifact_uploads import (
     ReserveArtifactCommand,
 )
 from tas.domain.audit import AuditActorKind, AuditEventKind, AuditOutcome
-from tas.domain.collaboration import ArtifactId, TaskId
+from tas.domain.collaboration import ArtifactId
 from tas.domain.idempotency import IdempotencyKey
 from tas.domain.identity import AgentId
 
@@ -124,19 +128,41 @@ class SQLiteArtifactUploadUnitOfWork:
                         connection, actor_id.value, replay
                     )
                     if artifact is None:
+                        lifecycle = connection.execute(
+                            "SELECT cleanup_status FROM tas_artifact_lifecycle "
+                            "WHERE artifact_id=?", (replay,),
+                        ).fetchone()
+                        if lifecycle is not None and lifecycle[0] != "active":
+                            rejection = ("artifact", replay, "artifact_retention_unavailable")
+                            raise ArtifactUploadAccessError("Artifact is unavailable")
                         raise ArtifactUploadIntegrityError(
                             "Artifact reservation result is unavailable"
                         )
                     connection.execute("COMMIT")
                     return ArtifactCommandResult(artifact, replayed=True)
+                charge = command.declared_size * (
+                    2 if command.media_type in {"text/plain", "application/json"} else 1
+                )
                 totals = connection.execute(
-                    "SELECT count(*),COALESCE(sum(declared_size),0) "
-                    "FROM tas_artifact_uploads WHERE task_id=?",
+                    "SELECT count(*),COALESCE(sum(life.charged_bytes),0) "
+                    "FROM tas_artifact_uploads upload JOIN tas_artifact_lifecycle life "
+                    "ON life.artifact_id=upload.id WHERE upload.task_id=? "
+                    "AND life.cleanup_status<>'purged'",
                     (command.task_id.value,),
                 ).fetchone()
-                if int(totals[0]) >= 1000 or int(totals[1]) + command.declared_size > MAX_TASK_ARTIFACT_BYTES:
+                if int(totals[0]) >= 1000 or int(totals[1]) + charge > MAX_TASK_ARTIFACT_BYTES:
                     rejection = ("task", command.task_id.value, "artifact_quota_exceeded")
                     raise ArtifactUploadConflictError("Artifact Task quota is exceeded")
+                owner_totals = connection.execute(
+                    "SELECT count(*),COALESCE(sum(charged_bytes),0) "
+                    "FROM tas_artifact_lifecycle WHERE owner_id=("
+                    "SELECT owner_id FROM tas_agents WHERE id=?) "
+                    "AND cleanup_status<>'purged'", (actor_id.value,),
+                ).fetchone()
+                if (int(owner_totals[0]) >= MAX_OWNER_ARTIFACT_COUNT
+                    or int(owner_totals[1]) + charge > MAX_OWNER_ARTIFACT_BYTES):
+                    rejection = ("task", command.task_id.value, "artifact_owner_quota_exceeded")
+                    raise ArtifactUploadConflictError("Artifact Owner quota is exceeded")
                 artifact_id = ArtifactId(str(uuid4()))
                 connection.execute(
                     "INSERT INTO tas_artifact_uploads(id,task_id,producer_agent_id,"
@@ -404,6 +430,16 @@ class SQLiteArtifactUploadUnitOfWork:
                         artifact.id.value,
                     ),
                 )
+                connection.execute(
+                    "UPDATE tas_artifact_lifecycle SET retention_class=?,expires_at=?,"
+                    "charged_bytes=? WHERE artifact_id=?",
+                    (
+                        "available" if scan_status is ArtifactSecurityStatus.CLEAN else "quarantine",
+                        (now + timedelta(days=(90 if scan_status is ArtifactSecurityStatus.CLEAN else 7))).isoformat(),
+                        artifact.declared_size,
+                        artifact.id.value,
+                    ),
+                )
                 if derived_id is not None and redacted_content is not None:
                     derived_digest = hashlib.sha256(redacted_content).hexdigest()
                     connection.execute(
@@ -605,52 +641,23 @@ class SQLiteArtifactUploadUnitOfWork:
     @staticmethod
     def _authorized_artifact(connection, actor_id: str, artifact_id: str):
         row = connection.execute(
-            "SELECT upload.id,upload.task_id,upload.producer_agent_id,upload.media_type,"
-            "upload.purpose,upload.declared_size,upload.declared_sha256,upload.status,"
-            "upload.actual_size,upload.actual_sha256,upload.created_at,upload.uploaded_at,"
-            "upload.finalized_at,security.scan_status,security.availability_status,"
-            "security.scanner_version,security.scanned_at,security.redaction_count,"
-            "source.source_artifact_id,derived.derived_artifact_id "
-            "FROM tas_artifact_uploads upload "
-            "JOIN tas_artifact_security security ON security.artifact_id=upload.id "
-            "LEFT JOIN tas_artifact_derivations source "
-            "ON source.derived_artifact_id=upload.id "
-            "LEFT JOIN tas_artifact_derivations derived "
-            "ON derived.source_artifact_id=upload.id "
+            f"SELECT {ARTIFACT_COLUMNS} FROM tas_artifact_uploads upload "
+            + ARTIFACT_JOINS +
             "JOIN tas_tasks task ON task.id=upload.task_id "
             "JOIN tas_projects project ON project.id=task.project_id "
             "JOIN tas_agents actor ON actor.id=? JOIN tas_team_memberships member "
             "ON member.team_id=project.team_id AND member.owner_id=actor.owner_id "
-            "WHERE upload.id=? AND upload.producer_agent_id=actor.id "
+            "WHERE upload.id=? AND life.cleanup_status='active' "
+            "AND life.owner_id=actor.owner_id "
+            "AND upload.producer_agent_id=actor.id "
             "AND task.assignee_agent_id=actor.id",
             (actor_id, artifact_id),
         ).fetchone()
-        return None if row is None else SQLiteArtifactUploadUnitOfWork._restore(row)
+        return None if row is None else restore_artifact(row)
 
     @staticmethod
     def _restore(row) -> ArtifactUpload:
-        return ArtifactUpload(
-            ArtifactId(str(row[0])),
-            TaskId(str(row[1])),
-            AgentId(str(row[2])),
-            str(row[3]),
-            ArtifactPurpose(str(row[4])),
-            int(row[5]),
-            str(row[6]),
-            ArtifactUploadStatus(str(row[7])),
-            None if row[8] is None else int(row[8]),
-            None if row[9] is None else str(row[9]),
-            datetime.fromisoformat(str(row[10])),
-            None if row[11] is None else datetime.fromisoformat(str(row[11])),
-            None if row[12] is None else datetime.fromisoformat(str(row[12])),
-            ArtifactSecurityStatus(str(row[13])),
-            ArtifactAvailabilityStatus(str(row[14])),
-            None if row[15] is None else str(row[15]),
-            None if row[16] is None else datetime.fromisoformat(str(row[16])),
-            int(row[17]),
-            None if row[18] is None else ArtifactId(str(row[18])),
-            None if row[19] is None else ArtifactId(str(row[19])),
-        )
+        return restore_artifact(row)
 
     @staticmethod
     def _ledger(connection, actor_id, operation, key, fingerprint):

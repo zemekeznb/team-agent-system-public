@@ -15,6 +15,8 @@ from tas.domain.identity import AgentId, DomainValidationError
 
 MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
 MAX_TASK_ARTIFACT_BYTES = 50 * 1024 * 1024
+MAX_OWNER_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
+MAX_OWNER_ARTIFACT_COUNT = 50_000
 
 
 class ArtifactUploadStatus(StrEnum):
@@ -36,6 +38,18 @@ class ArtifactSecurityStatus(StrEnum):
 class ArtifactAvailabilityStatus(StrEnum):
     QUARANTINED = "quarantined"
     AVAILABLE = "available"
+
+
+class ArtifactCleanupStatus(StrEnum):
+    ACTIVE = "active"
+    PENDING = "pending"
+    PURGED = "purged"
+
+
+class ArtifactRetentionClass(StrEnum):
+    PENDING = "pending"
+    AVAILABLE = "available"
+    QUARANTINE = "quarantine"
 
 
 class ArtifactPurpose(StrEnum):
@@ -175,6 +189,9 @@ class ArtifactUpload:
     scanner_version: str | None = None
     scanned_at: datetime | None = None
     redaction_count: int = 0
+    retention_class: ArtifactRetentionClass = ArtifactRetentionClass.PENDING
+    expires_at: datetime | None = None
+    cleanup_status: ArtifactCleanupStatus = ArtifactCleanupStatus.ACTIVE
     source_artifact_id: ArtifactId | None = None
     derived_artifact_id: ArtifactId | None = None
 
@@ -195,6 +212,24 @@ class ArtifactUpload:
             raise TypeError("security_status must be ArtifactSecurityStatus")
         if not isinstance(self.availability_status, ArtifactAvailabilityStatus):
             raise TypeError("availability_status must be ArtifactAvailabilityStatus")
+        if not isinstance(self.retention_class, ArtifactRetentionClass):
+            raise TypeError("retention_class must be ArtifactRetentionClass")
+        if not isinstance(self.cleanup_status, ArtifactCleanupStatus):
+            raise TypeError("cleanup_status must be ArtifactCleanupStatus")
+        _utc(self.created_at, "created_at")
+        _utc(self.expires_at, "expires_at")
+        if self.expires_at <= self.created_at:
+            raise DomainValidationError("Artifact expiry must follow creation")
+        if self.status is ArtifactUploadStatus.FINALIZED:
+            expected_retention = (
+                ArtifactRetentionClass.AVAILABLE
+                if self.availability_status is ArtifactAvailabilityStatus.AVAILABLE
+                else ArtifactRetentionClass.QUARANTINE
+            )
+            if self.retention_class is not expected_retention:
+                raise DomainValidationError("Artifact retention contradicts availability")
+        elif self.retention_class is not ArtifactRetentionClass.PENDING:
+            raise DomainValidationError("Unfinalized Artifact requires pending retention")
         if (
             not isinstance(self.declared_size, int)
             or isinstance(self.declared_size, bool)
@@ -202,7 +237,6 @@ class ArtifactUpload:
         ):
             raise DomainValidationError("declared_size exceeds the Artifact limit")
         _sha256(self.declared_sha256)
-        _utc(self.created_at, "created_at")
         if self.status is ArtifactUploadStatus.RESERVED:
             if any(
                 value is not None
